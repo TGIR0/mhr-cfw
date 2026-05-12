@@ -1,0 +1,61 @@
+# Secrets & user config
+config.json
+.env
+
+# CA certificates (generated at runtime, contain private keys)
+ca/
+cert/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp MITM certs
+domainfront_certs_*/
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+
+# Secrets & config (NEVER commit auth keys!)
+config.json
+ca/ca.key
+exclude_cache.json
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

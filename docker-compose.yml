@@ -1,0 +1,24 @@
+name: "mhr-cfw"
+
+services:
+  mhr-cfw:
+    image: mhr-cfw:latest               # or build: .
+    container_name: mhr-cfw
+    restart: unless-stopped
+    ports:
+      - "8085:8085"    # HTTP proxy
+      - "1080:1080"    # SOCKS5 proxy (if enabled)
+    volumes:
+      - ./config.json:/app/config.json:ro   # read-only config
+      - mhr-cfw-data:/app/data               # persistent certs & logs
+    environment:
+      - DFT_LOG_LEVEL=INFO
+    networks:
+      - mhr-cfw-proxy
+
+networks:
+  mhr-cfw-proxy:
+    driver: bridge
+
+volumes:
+  mhr-cfw-data:
