@@ -10,6 +10,7 @@ The user must install ca/ca.crt in their browser's trusted CAs once.
 Requires: pip install cryptography
 """
 
+import contextlib
 import datetime
 import logging
 import os
@@ -21,6 +22,12 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+
+try:
+    from constants import PROJECT_CERT_NAME, PROJECT_NAME
+except Exception:
+    PROJECT_CERT_NAME = "TG Domain Relay Local CA"
+    PROJECT_NAME = "TG Domain Relay"
 
 log = logging.getLogger("MITM")
 
@@ -49,7 +56,7 @@ class MITMCertManager:
         self._ca_key = None
         self._ca_cert = None
         self._ctx_cache: dict[str, ssl.SSLContext] = {}
-        self._cert_dir = tempfile.mkdtemp(prefix="domainfront_certs_")
+        self._cert_dir = tempfile.mkdtemp(prefix="tg_domain_relay_certs_")
         self._ensure_ca()
 
     def _ensure_ca(self):
@@ -71,10 +78,10 @@ class MITMCertManager:
             public_exponent=65537, key_size=2048
         )
         subject = issuer = x509.Name([
-            x509.NameAttribute(NameOID.COMMON_NAME, "mhr-cfw"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "mhr-cfw"),
+            x509.NameAttribute(NameOID.COMMON_NAME, PROJECT_CERT_NAME),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, PROJECT_NAME),
         ])
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         self._ca_cert = (
             x509.CertificateBuilder()
             .subject_name(subject)
@@ -114,10 +121,8 @@ class MITMCertManager:
         # Restrict the CA private key to the current user on POSIX.
         # os.chmod is a no-op for permission bits on Windows.
         if os.name == "posix":
-            try:
+            with contextlib.suppress(OSError):
                 os.chmod(CA_KEY_FILE, 0o600)
-            except OSError:
-                pass
         with open(CA_CERT_FILE, "wb") as f:
             f.write(self._ca_cert.public_bytes(serialization.Encoding.PEM))
 
@@ -138,7 +143,7 @@ class MITMCertManager:
             with open(key_file, "wb") as f:
                 f.write(key_pem)
 
-            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ctx.set_alpn_protocols(["http/1.1"])
             ctx.load_cert_chain(cert_file, key_file)
             self._ctx_cache[domain] = ctx
@@ -160,7 +165,7 @@ class MITMCertManager:
         except ValueError:
             san_entry = x509.DNSName(domain)
 
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(datetime.UTC)
         cert = (
             x509.CertificateBuilder()
             .subject_name(subject)

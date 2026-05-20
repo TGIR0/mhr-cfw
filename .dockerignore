@@ -1,0 +1,14 @@
+.git/
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+config.json
+ca/
+domainfront_certs_*/
+tg_domain_relay_certs_*/

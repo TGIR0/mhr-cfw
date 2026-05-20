@@ -25,7 +25,6 @@ Strategy (in order):
 import ipaddress
 import logging
 import socket
-from typing import Dict, List, Optional, Set
 
 log = logging.getLogger("LAN")
 
@@ -33,7 +32,7 @@ log = logging.getLogger("LAN")
 # ---------------------------------------------------------------------------
 # Primary-IP discovery (UDP connect trick)
 # ---------------------------------------------------------------------------
-def _primary_ipv4() -> Optional[str]:
+def _primary_ipv4() -> str | None:
     """
     Return the primary local IPv4 the OS would use for outbound traffic.
 
@@ -56,7 +55,7 @@ def _primary_ipv4() -> Optional[str]:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-def get_network_interfaces() -> Dict[str, List[str]]:
+def get_network_interfaces() -> dict[str, list[str]]:
     """
     Get network interfaces and their associated non-loopback IPv4 addresses.
 
@@ -65,10 +64,10 @@ def get_network_interfaces() -> Dict[str, List[str]]:
         Labels are best-effort synthetic names such as ``"primary"``
         and ``"host"``.
     """
-    interfaces: Dict[str, List[str]] = {}
-    seen_ips: Set[str] = set()
+    interfaces: dict[str, list[str]] = {}
+    seen_ips: set[str] = set()
 
-    def _add(label: str, ip: Optional[str]) -> None:
+    def _add(label: str, ip: str | None) -> None:
         if not ip or ip in seen_ips:
             return
         if ip.startswith('127.'):
@@ -95,7 +94,7 @@ def get_network_interfaces() -> Dict[str, List[str]]:
     return interfaces
 
 
-def get_lan_ips(port: int = 8085) -> List[str]:
+def get_lan_ips(port: int = 8085) -> list[str]:
     """
     Get list of LAN-accessible proxy addresses (IPv4 only).
 
@@ -109,7 +108,7 @@ def get_lan_ips(port: int = 8085) -> List[str]:
         List[str]: List of "IP:port" strings for LAN access
     """
     interfaces = get_network_interfaces()
-    lan_addresses: List[str] = []
+    lan_addresses: list[str] = []
 
     for iface_ips in interfaces.values():
         for ip in iface_ips:
@@ -123,8 +122,8 @@ def get_lan_ips(port: int = 8085) -> List[str]:
                 lan_addresses.append(f"{ip}:{port}")
 
     # Remove duplicates while preserving order.
-    seen: Set[str] = set()
-    unique_addresses: List[str] = []
+    seen: set[str] = set()
+    unique_addresses: list[str] = []
     for addr in lan_addresses:
         if addr not in seen:
             seen.add(addr)
@@ -133,7 +132,7 @@ def get_lan_ips(port: int = 8085) -> List[str]:
     return unique_addresses
 
 
-def log_lan_access(port: int = 8085, socks_port: Optional[int] = None):
+def log_lan_access(port: int = 8085, socks_port: int | None = None):
     """
     Log the LAN-accessible proxy addresses for user convenience.
 

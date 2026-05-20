@@ -9,13 +9,13 @@ IP to configure in config.json when your current IP is blocked.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import ssl
 import time
 from dataclasses import dataclass
-from typing import Optional
 
-from constants import CANDIDATE_IPS, GOOGLE_SCANNER_TIMEOUT, GOOGLE_SCANNER_CONCURRENCY
+from constants import CANDIDATE_IPS, GOOGLE_SCANNER_CONCURRENCY, GOOGLE_SCANNER_TIMEOUT
 
 log = logging.getLogger("Scanner")
 
@@ -24,8 +24,8 @@ log = logging.getLogger("Scanner")
 class ProbeResult:
     """Result of a single IP probe."""
     ip: str
-    latency_ms: Optional[int] = None
-    error: Optional[str] = None
+    latency_ms: int | None = None
+    error: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -78,10 +78,8 @@ async def _probe_ip(
             response = await asyncio.wait_for(reader.read(256), timeout=timeout)
 
             writer.close()
-            try:
+            with contextlib.suppress(Exception):
                 await writer.wait_closed()
-            except Exception:
-                pass
 
             # Check if we got an HTTP response
             if not response:
@@ -95,7 +93,7 @@ async def _probe_ip(
             elapsed_ms = int((time.time() - start_time) * 1000)
             return ProbeResult(ip=ip, latency_ms=elapsed_ms)
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return ProbeResult(ip=ip, error="timeout")
         except ConnectionRefusedError:
             return ProbeResult(ip=ip, error="connection refused")

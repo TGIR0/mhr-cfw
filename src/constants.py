@@ -7,8 +7,14 @@ overridden from `config.json` where noted.
 
 from __future__ import annotations
 
+# ── Project identity ─────────────────────────────────────────────────────
+PROJECT_NAME = "TG Domain Relay"
+PROJECT_SLUG = "tg-domain-relay"
+PROJECT_CERT_NAME = "TG Domain Relay Local CA"
+PROJECT_DESCRIPTION = "Google-fronted HTTP relay with Cloudflare Worker exit"
+
 # ── Version ───────────────────────────────────────────────────────────────
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 
 
 # ── Size caps ─────────────────────────────────────────────────────────────

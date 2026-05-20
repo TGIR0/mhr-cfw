@@ -1,185 +1,236 @@
-# MHR-CFW - MasterHttpRelay + Cloudflare Worker
+# TG Domain Relay
 
-[![GitHub](https://img.shields.io/badge/GitHub-MHR_CFW-blue?logo=github)](https://github.com/denuitt1/mhr-cfw)
-
+Google-fronted HTTP relay with Cloudflare Worker exit.
 
 | [English](README.md) | [Persian](README_FA.md) |
 | :---: | :---: |
 
-## Disclaimer
+This repository is an independent relay project, not an official fork of any
+upstream project. The goal is to provide a maintainable Python implementation
+first, then leave the codebase ready for a future Rust rewrite.
 
-`mhr-cfw` is provided for educational, testing, and research purposes only.
+## Current Architecture
 
-- **Provided without warranty:** This software is provided "AS IS", without express or implied warranty, including merchantability, fitness for a particular purpose, and non-infringement.
-- **Limitation of liability:** The developers and contributors are not responsible for any direct, indirect, incidental, consequential, or other damages resulting from the use of this project or the inability to use it.
-- **User responsibility:** Running this project outside controlled test environments may affect networks, accounts, proxies, certificates, or connected systems. You are solely responsible for installation, configuration, and use.
-- **Legal compliance:** You are responsible for complying with all local, national, and international laws and regulations before using this software.
-- **Google services compliance:** If you use Google Apps Script or other Google services with this project, you are responsible for complying with Google's Terms of Service, acceptable use rules, quotas, and platform policies. Misuse may lead to suspension or termination of your Google account or deployments.
-- **License terms:** Use, copying, distribution, and modification of this software are governed by the repository license. Any use outside those terms is prohibited.
-
----
-
-## How It Works
-
+```text
+Browser / app
+  -> local HTTP or SOCKS5 proxy
+  -> TLS connection to a Google frontend IP with Google SNI
+  -> Google Apps Script web app
+  -> Cloudflare Worker
+  -> target website
 ```
-Client -> Local Proxy -> Google/CDN front -> GoogleAppsScript (GAS) Relay -> Cloudflare Worker -> Target website
-             |
-             +-> shows www.google.com to the network DPI filter
+
+Optional stable-exit mode:
+
+```text
+Cloudflare Worker -> self-hosted upstream forwarder on a VPS -> target website
 ```
-In normal use, the browser sends traffic to the proxy running on your computer.
-The proxy sends that traffic through Google-facing infrastructure so the network only sees an allowed domain such as `www.google.com`.
-Your deployed relay then fetches the real website through cloudflare worker and sends the response back through the same path.
 
-This means the filter sees normal-looking Google traffic, while the actual destination stays hidden inside the relay request.
+The local proxy performs HTTPS interception with a local CA certificate, turns
+browser HTTP requests into relay JSON, sends them through Google Apps Script,
+and receives a raw HTTP response reconstructed from the Worker response.
 
---- 
+## What Works Today
 
-## How to Use
+- Local HTTP proxy and SOCKS5 `CONNECT` proxy.
+- HTTPS MITM for browser-originated HTTP traffic.
+- Google Apps Script relay using `UrlFetchApp.fetch()` and `fetchAll()`.
+- Cloudflare Worker HTTP exit with optional VPS forwarder for stable IP.
+- Optional direct Worker HTTP relay. When the Worker hostname is reachable, the
+  local proxy sends HTTP relay payloads straight to Worker and keeps Apps Script
+  as fallback, reducing Google URL Fetch quota use.
+- Optional Worker WebSocket TCP carrier for raw TCP streams, disabled by default
+  and separate from the Apps Script path.
+- HTTP/2 multiplexing from the local relay to Google when the `h2` package and
+  negotiated ALPN support are available.
+- Parallel range download optimization for large HTTP downloads.
+- Fail-closed protocol policy for unsupported raw TCP, UDP, and QUIC paths so
+  clients do not silently fall back to the normal network.
+- KCP-style reliability primitives are present for the future UDP/WebSocket/Rust
+  carrier, but not yet wired into the live proxy path.
 
-### 1 - Download project and extract 
+## Platform Boundaries
+
+This project should stay aligned with vendor documentation instead of inventing
+unsupported transport claims.
+
+- Google Apps Script `UrlFetchApp` is the documented path for outbound HTTP(S)
+  fetches; it is not a general TCP, UDP, QUIC, or WebSocket runtime.
+- Cloudflare Workers support HTTP/HTTPS request handling, WebSockets, HTTP/3
+  ingress, and outbound TCP sockets, but Workers are not a generic UDP egress
+  runtime.
+- UDP and QUIC support must therefore be implemented as a separate tunnel design
+  with explicit encapsulation or a self-hosted forwarder. It should not be
+  described as direct Apps Script UDP/QUIC support.
+- `allow_direct_tcp` and `allow_direct_udp` default to `false`. Turning them on
+  trades leak resistance for compatibility and should only be used deliberately.
+
+References:
+
+- Google Apps Script `UrlFetchApp`: https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app
+- Google Apps Script quotas: https://developers.google.com/apps-script/guides/services/quotas
+- Cloudflare Workers protocols: https://developers.cloudflare.com/workers/reference/protocols/
+- Cloudflare Workers WebSockets: https://developers.cloudflare.com/workers/runtime-apis/websockets/
+- Cloudflare Workers TCP sockets: https://developers.cloudflare.com/workers/runtime-apis/tcp-sockets/
+
+## Install
 
 ```bash
-git clone https://github.com/denuitt1/mhr-cfw.git
-cd mhr-cfw
+python -m venv .venv
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
-> **Can't reach PyPI directly?** Use this mirror instead:
-> ```bash
-> pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --trusted-host mirror-pypi.runflare.com
-> ```
 
-
-### 2 - Set Up the Cloudflare Worker (worker.js)
-
-1. Open [Cloudflare Dashboard](https://dash.cloudflare.com/) and sign in with your Cloudflare account.
-2. From the sidebar, navigate to **Compute > Workers & Pages**
-3. Click **Create Application**, Choose **Start with Hello World** and click on **Deploy**
-4. Click on **Edit code** and **Delete** all the default code in the editor.
-5. Open the [`worker.js`](script/worker.js) file from this project (under `script/`), **copy everything**, and paste it into the Apps Script editor.
-6. **Important:** Change the worker on this line to the worker you created:
-   ```javascript
-   const WORKER_URL = "myworker.workers.dev";
-   ```
-7. Click **Deploy**.
-
-### 3 - Set Up the Google Relay (Code.gs)
-
-1. Open [Google Apps Script](https://script.google.com/) and sign in with your Google account.
-2. Click **New project**.
-3. **Delete** all the default code in the editor.
-4. Open the [`Code.gs`](script/Code.gs) file from this project (under `script/`), **copy everything**, and paste it into the Apps Script editor.
-5. **Important:** Change the password on this line to something only you know, also replace the worker url with your cloudflare worker:
-   ```javascript
-   const AUTH_KEY = "your-secret-password-here";
-   const WORKER_URL = "https://myworker.workers.dev";
-   ```
-6. Click **Deploy** → **New deployment**.
-7. Choose **Web app** as the type.
-8. Set:
-   - **Execute as:** Me
-   - **Who has access:** Anyone
-9. Click **Deploy**.
-10. **Copy the Deployment ID** (it looks like a long random string). You'll need it in the next step.
-
-> ⚠️ Remember the password you set in step 3. You'll use the same password in the config file below.
-
-### 4 - Run
-
-Click on the `run.bat` file (on windows) or `run.sh` file (on linux) to start the relay.
-
-If you're running for the first time it will prompt a setup wizard where you have to enter the AUTH_KEY and Google Apps Script Deployment ID.
-You should see a message saying the HTTP proxy is running on `127.0.0.1:8085`
-
-### 5 - Usage
-
-We recommend using [v2rayN client](https://github.com/2dust/v2rayn) and configuring a socks5 proxy.
-
-You can also use [FoxyProxy](https://getfoxyproxy.org/)'s [Chrome extension](https://chromewebstore.google.com/detail/foxyproxy/gcknhkkoolaabfmlnjonogaaifnjlfnp?hl=en) or [Firefox extension](https://addons.mozilla.org/en-US/firefox/addon/foxyproxy-standard/) to use this proxy in your browser.
-
-### 6 - Test your connection
-
-Open [ipleak.net](https://ipleak.net) in your browser, you should see your ip address set as cloudflare's.
-
-<img width="1454" height="869" alt="image" src="https://github.com/user-attachments/assets/dfd3316d-69b6-4b0e-b564-fdb055dbdafd" />
-
-
----
-
-## Optional: Stable Exit IP via Upstream Forwarder
-
-CAPTCHAs (Cloudflare Turnstile/bot challenge, reCAPTCHA, hCaptcha) bind tokens
-to the IP that solved the challenge. Cloudflare Workers exit through different
-edge IPs per request, so verification on the target site fails even when you
-solve the challenge. This optional add-on lets the Worker forward all `fetch()`
-calls through a small Node server you run on a VPS with a stable IP — giving
-the target site one consistent exit address.
-
-### When you need this
-
-- Sites behind Cloudflare's bot challenge keep looping you back to the challenge page.
-- Login forms reject you after solving a reCAPTCHA/hCaptcha.
-- You need cookie continuity across requests (e.g. `cf_clearance`).
-
-If you don't hit these, leave it unconfigured — the Worker behaves exactly as before.
-
-### Why a separate server is required
-
-Cloudflare Workers don't expose a stable outbound IP — `fetch()` exits through a rotating pool of Cloudflare edge IPs, which is exactly what breaks IP-bound CAPTCHA tokens. Cloudflare's static-egress options (BYOIP, Egress Workers) are Enterprise-tier, so a small VPS with a static IP is the practical workaround. The forwarder is just a thin proxy that re-issues the `fetch()` from a stable address.
-
-### 1. Deploy the forwarder on a VPS
-
-The reference implementation is [`script/upstream_forwarder.js`](script/upstream_forwarder.js).
-It needs Node 18+ and no dependencies. Run it behind Caddy or nginx with TLS —
-the Worker rejects non-HTTPS forwarder URLs.
+On Linux/macOS:
 
 ```bash
-# On your VPS (Ubuntu/Debian example):
-sudo apt install -y nodejs   # must be 18+
-export AUTH_KEY="some-long-random-string-at-least-32-chars"
-export PORT=8787
-node script/upstream_forwarder.js
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Front it with Caddy for auto-TLS:
-
-```
-forwarder.example.com {
-    reverse_proxy 127.0.0.1:8787
-}
-```
-
-Quick smoke test:
+If PyPI is not reachable:
 
 ```bash
-curl -X POST https://forwarder.example.com/fwd \
-  -H "x-upstream-auth: $AUTH_KEY" \
-  -H "content-type: application/json" \
-  -d '{"u":"https://httpbin.org/ip","m":"GET","h":{}}'
+pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --trusted-host mirror-pypi.runflare.com
 ```
 
-The decoded response body should show the **VPS's IP**.
+## Deploy
 
-### 2. Wire the Worker to the forwarder
+1. Create a Cloudflare Worker and paste `deploy/cloudflare-worker/worker.js`.
+2. Set `WORKER_URL` in the Worker file to your own `*.workers.dev` hostname.
+3. If you enable direct Worker HTTP relay, set the Worker secret
+   `WORKER_AUTH_KEY` to the same value as local `worker_auth_key`.
+4. Create a Google Apps Script web app and paste `deploy/gas/Code.gs`.
+5. Set `AUTH_KEY` and `WORKER_URL` in `Code.gs`. If the Worker secret
+   `WORKER_AUTH_KEY` is set, put the same value in `Code.gs` too.
+6. Deploy the Apps Script as a Web app with access set to `Anyone`.
+7. Copy the Apps Script Deployment ID.
 
-In the Cloudflare dashboard → your Worker → **Settings → Variables and Secrets**:
+## Configure
 
-| Name | Type | Value |
-|---|---|---|
+Create a private config from the safe example:
+
+```bash
+copy config.example.json config.json
+```
+
+On Linux/macOS:
+
+```bash
+cp config.example.json config.json
+```
+
+Set at least:
+
+- `script_id`: your Apps Script Deployment ID.
+- `auth_key`: the same secret as `AUTH_KEY` in `Code.gs`.
+- `google_ip`: a reachable Google frontend IP. Use `python main.py --scan` to test candidates.
+
+Do not commit `config.json`; it is ignored because it contains secrets.
+
+Validate the config without starting listeners:
+
+```bash
+python main.py --check-config
+```
+
+Important transport and speed knobs:
+
+- `direct_worker_enabled`: when `true`, HTTP relay payloads try
+  `worker_url` first and use Apps Script only after a circuit-breaker failure.
+  This is the lowest-quota path, but only works when the Worker hostname is
+  reachable from the client network.
+- `worker_url` and `worker_auth_key`: HTTPS Worker endpoint and shared secret
+  for the direct HTTP relay. Set Worker secret `WORKER_AUTH_KEY` to match.
+- `direct_worker_concurrency`, `direct_worker_pool_max`,
+  `direct_worker_conn_ttl`: direct Worker keep-alive pool tuning for lower TLS
+  handshake overhead and lower latency.
+- `privacy_log_mode`: `host` by default, so logs avoid full paths/query strings.
+  Use `full` only for local debugging, or `off` for minimal request logging.
+- `tcp_relay_mode`: `http_only` by default. Set `worker_websocket` only after
+  deploying the Worker `/tcp` endpoint and setting `worker_ws_url`.
+- `worker_ws_url`: `wss://.../tcp` endpoint for TCP-over-Worker-WebSocket.
+  This path skips Apps Script quota, but it is direct to Cloudflare Worker and
+  only works where the Worker hostname itself is reachable.
+- `udp_mode`: `disabled` today; future values will use encapsulated carriers.
+- `quic_mode`: `block` by default to avoid UDP/QUIC leaks.
+- `kcp_enabled`, `kcp_mtu`, `kcp_window`, `kcp_resend_after`: reliability
+  settings for the planned KCP-style carrier.
+- `relay_concurrency`, `pool_max`, `pool_min_idle`, `batch_max`,
+  `batch_window_micro`, `batch_window_macro`: Apps Script throughput tuning.
+- `parallel_range_enabled` and the `chunked_download_*` keys: large-download
+  acceleration.
+
+## Run
+
+Windows:
+
+```cmd
+run.bat
+```
+
+Linux/macOS:
+
+```bash
+chmod +x run.sh
+./run.sh
+```
+
+Manual:
+
+```bash
+python main.py
+```
+
+The default listeners are:
+
+- HTTP proxy: `127.0.0.1:8085`
+- SOCKS5 proxy: `127.0.0.1:1080`
+
+## Optional Stable Exit IP
+
+Cloudflare Worker egress IPs can rotate. For sites that bind challenge tokens
+or sessions to the source IP, deploy `deploy/upstream_forwarder/upstream_forwarder.js`
+on a VPS with a stable IP and configure these Worker variables/secrets:
+
+| Name | Type | Example |
+| --- | --- | --- |
 | `UPSTREAM_FORWARDER_URL` | Secret | `https://forwarder.example.com/fwd` |
-| `UPSTREAM_AUTH_KEY` | Secret | the same `AUTH_KEY` you set on the VPS |
-| `UPSTREAM_FAIL_MODE` | Variable | `closed` (default) — return 502 on forwarder failure. Use `open` to fall back to direct fetch. |
-| `UPSTREAM_TIMEOUT_MS` | Variable (optional) | default `25000` |
+| `UPSTREAM_AUTH_KEY` | Secret | same as the VPS `AUTH_KEY` |
+| `UPSTREAM_FAIL_MODE` | Variable | `closed` or `open` |
+| `UPSTREAM_TIMEOUT_MS` | Variable | `25000` |
 
-Save and redeploy the Worker.
+For the optional Worker WebSocket TCP carrier, set this Worker secret and match
+it in local `worker_ws_auth_key` (or reuse local `auth_key`):
 
-### 3. Verify
+| Name | Type | Example |
+| --- | --- | --- |
+| `WORKER_WS_AUTH_KEY` | Secret | long random secret |
 
-Browse `https://httpbin.org/ip` through the proxy — you should see the **VPS's IP**, not Cloudflare's. Then revisit a CAPTCHA-protected site that wasn't working — the challenge should now validate.
+## Dependency Baseline
 
-> The forwarder must require auth. Without `AUTH_KEY` it refuses to start. Anyone with the URL and key can use it as a relay, so keep both secret.
+Runtime dependencies are intentionally small:
 
+- `cryptography`: local CA and MITM certificates.
+- `h2`: HTTP/2 client transport to Google.
+- `certifi`: consistent CA bundle in containers and embedded Python builds.
+- `brotli` and `zstandard`: response decoding for modern websites.
+- `websockets`: optional Worker WebSocket TCP carrier.
+- `aioquic`, `h11`, `anyio`: planned transport work, kept explicit so future
+  QUIC and HTTP experiments use maintained protocol libraries.
+- `ikcp`: optional future native KCP carrier candidate where Python support is
+  available.
 
----
+Development tools are in `requirements-dev.txt`.
 
-## Sources for this project
-- https://github.com/masterking32/MasterHttpRelayVPN
+## Safety
+
+This software is provided for educational, testing, and research purposes.
+You are responsible for complying with local law and with Google and Cloudflare
+terms, quotas, and acceptable-use policies. The local CA private key in `ca/ca.key`
+is sensitive and must never be shared.
+
+## License
+
+[MIT](LICENSE)

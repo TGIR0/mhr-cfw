@@ -6,7 +6,7 @@ Also attempts to install into Firefox's NSS certificate store when found.
 
 Usage:
     from cert_installer import install_ca, is_ca_trusted
-    install_ca("/path/to/ca.crt", cert_name="mhr-cfw")
+    install_ca("/path/to/ca.crt", cert_name="TG Domain Relay Local CA")
 """
 
 import glob
@@ -15,12 +15,15 @@ import os
 import platform
 import shutil
 import subprocess
-import sys
-import tempfile
 
 log = logging.getLogger("Cert")
 
-CERT_NAME = "mhr-cfw"
+try:
+    from constants import PROJECT_CERT_NAME
+except Exception:
+    PROJECT_CERT_NAME = "TG Domain Relay Local CA"
+
+CERT_NAME = PROJECT_CERT_NAME
 
 
 # ─────────────────────────────────────────────────────────────────────────────

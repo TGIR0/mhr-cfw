@@ -1,24 +1,18 @@
-name: "mhr-cfw"
+name: "tg-domain-relay"
 
 services:
-  mhr-cfw:
-    image: mhr-cfw:latest               # or build: .
-    container_name: mhr-cfw
+  tg-domain-relay:
+    image: .
+    container_name: "tg-domain-relay"
     restart: unless-stopped
-    ports:
-      - "8085:8085"    # HTTP proxy
-      - "1080:1080"    # SOCKS5 proxy (if enabled)
-    volumes:
-      - ./config.json:/app/config.json:ro   # read-only config
-      - mhr-cfw-data:/app/data               # persistent certs & logs
-    environment:
-      - DFT_LOG_LEVEL=INFO
     networks:
-      - mhr-cfw-proxy
+      - tg-domain-relay-proxy
+    ports:
+      - "8085:8085" # http port
+      - "1080:1080" # socks5 port
 
 networks:
-  mhr-cfw-proxy:
+  tg-domain-relay-proxy:
+    name: tg-domain-relay-proxy
     driver: bridge
-
-volumes:
-  mhr-cfw-data:
+    external: false

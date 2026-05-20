@@ -16,7 +16,6 @@ import os
 import sys
 import time
 
-
 # ─── ANSI palette ──────────────────────────────────────────────────────────
 
 RESET   = "\x1b[0m"
@@ -123,7 +122,7 @@ class PrettyFormatter(logging.Formatter):
 
     def _fmt_time(self, record: logging.LogRecord) -> str:
         t = time.localtime(record.created)
-        ms = int((record.created - int(record.created)) * 1000)
+        int((record.created - int(record.created)) * 1000)
         return f"{time.strftime('%H:%M:%S', t)}"
 
     def _fmt_level(self, levelname: str) -> str:
@@ -185,14 +184,14 @@ def configure(level: str = "INFO", *, stream=None) -> None:
 
     handler = logging.StreamHandler(stream)
     handler.setFormatter(PrettyFormatter(use_color=use_color))
-    handler.set_name("mhrvpn.pretty")
+    handler.set_name("tg_domain_relay.pretty")
 
     root = logging.getLogger()
     root.setLevel(getattr(logging, level.upper(), logging.INFO))
 
     # Remove previous pretty handler(s) we installed.
     for h in list(root.handlers):
-        if getattr(h, "name", "") == "mhrvpn.pretty":
+        if getattr(h, "name", "") == "tg_domain_relay.pretty":
             root.removeHandler(h)
     root.addHandler(handler)
 
@@ -234,8 +233,13 @@ def print_banner(version: str, *, stream=None) -> None:
     def c(code: str) -> str:
         return code if color else ""
 
-    title = "mhr-cfw"
-    subtitle = "Domain-Fronted GAS-CFW Relay"
+    try:
+        from constants import PROJECT_DESCRIPTION, PROJECT_SLUG
+        title = PROJECT_SLUG
+        subtitle = PROJECT_DESCRIPTION
+    except Exception:
+        title = "tg-domain-relay"
+        subtitle = "Google-fronted relay"
     version_tag = f"v{version}"
 
     left = f" {title} "
