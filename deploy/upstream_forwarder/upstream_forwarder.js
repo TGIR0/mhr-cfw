@@ -95,19 +95,41 @@ const server = http.createServer(async (req, res) => {
             redirect: body.r === false ? "manual" : "follow"
         };
 
-        if (body.b) {
-            fetchOptions.body = Buffer.from(body.b, "base64");
+    if (body.b) {
+        let buf = Buffer.from(body.b, "base64");
+        if (body.ce === "gzip") {
+            try {
+                buf = require("zlib").gunzipSync(buf);
+            } catch (_) { /* fallback to raw */ }
         }
+        fetchOptions.body = buf;
+    }
 
         let resp;
         try {
-            resp = await fetch(body.u, fetchOptions);
+        const controller = new AbortController();
+        const fetchTimer = setTimeout(() => controller.abort(), 30_000);
+        try {
+            resp = await fetch(body.u, { ...fetchOptions, signal: controller.signal });
+        } finally {
+            clearTimeout(fetchTimer);
+        }
         } catch (err) {
             sendJson(res, 502, { e: "fetch failed: " + String(err && err.message || err) });
             return;
         }
 
+        const MAX_RESPONSE_BYTES = 200 * 1024 * 1024;
+        const cl = parseInt(resp.headers.get("content-length") || "0", 10);
+        if (cl > MAX_RESPONSE_BYTES) {
+            sendJson(res, 502, { e: "response too large" });
+            return;
+        }
         const buf = Buffer.from(await resp.arrayBuffer());
+        if (buf.byteLength > MAX_RESPONSE_BYTES) {
+            sendJson(res, 502, { e: "response too large after read" });
+            return;
+        }
         const responseHeaders = {};
         resp.headers.forEach((v, k) => {
             responseHeaders[k] = v;

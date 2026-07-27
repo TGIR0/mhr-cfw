@@ -1589,7 +1589,11 @@ class ProxyServer:
                     RouteDecision.IR_DIRECT,
                     RouteDecision.GOOGLE_FRONTED_DIRECT,
                 }:
-                    response = await self._direct_http_request(method, url, headers, body)
+                    try:
+                        response = await self._direct_http_request(method, url, headers, body)
+                    except Exception as e:
+                        log.error("Direct request failed (%s): %s", self._log_url(url), e)
+                        response = self._compat_error_response(502, f"Direct failed: {e}")
                     writer.write(response)
                     await writer.drain()
                     continue
@@ -1848,7 +1852,11 @@ class ProxyServer:
             RouteDecision.IR_DIRECT,
             RouteDecision.GOOGLE_FRONTED_DIRECT,
         }:
-            response = await self._direct_http_request(method, log_target, headers, body)
+            try:
+                response = await self._direct_http_request(method, log_target, headers, body)
+            except Exception as e:
+                log.error("Direct request failed (%s): %s", self._log_url(log_target), e)
+                response = self._compat_error_response(502, f"Direct failed: {e}")
             writer.write(response)
             await writer.drain()
             return

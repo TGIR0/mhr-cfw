@@ -7,7 +7,6 @@ const WORKER_URL = "YOUR_WORKER_HOSTNAME.workers.dev";
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 25000;
 const DEFAULT_TCP_CONNECT_TIMEOUT_MS = 10000;
 const WS_TCP_PATH = "/tcp";
-const WS_TCP_PATH = "/tcp";
 
 // ── Rate limiting ──────────────────────────────────────────────
 const RATE_WINDOW_MS = 60_000;   // 1 minute window
@@ -139,14 +138,23 @@ async function relayHttp(req, env) {
         // Decompress gzip-compressed body if signaled
         if (req.ce === "gzip") {
             try {
-                bodyBytes = decompressGzip(bodyBytes);
+                bodyBytes = await decompressGzip(bodyBytes);
             } catch (_) { /* fallback to raw */ }
         }
         fetchOptions.body = bodyBytes;
     }
 
+    const MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
+
     const resp = await fetch(targetUrl.toString(), fetchOptions);
+    const contentLength = parseInt(resp.headers.get("content-length") || "0", 10);
+    if (contentLength > MAX_RESPONSE_BYTES) {
+        return { e: "response too large: " + contentLength + " bytes" };
+    }
     const buffer = await resp.arrayBuffer();
+    if (buffer.byteLength > MAX_RESPONSE_BYTES) {
+        return { e: "response too large after read: " + buffer.byteLength };
+    }
 
     const responseHeaders = {};
     resp.headers.forEach((v, k) => {
@@ -162,20 +170,27 @@ async function relayHttp(req, env) {
 
 function arrayBufferToBase64(buffer) {
     const uint8 = new Uint8Array(buffer);
-    let binary = "";
+    const chunks = [];
     const chunkSize = 0x8000;
 
     for (let i = 0; i < uint8.length; i += chunkSize) {
-        binary += String.fromCharCode.apply(
+        chunks.push(String.fromCharCode.apply(
             null,
             uint8.subarray(i, i + chunkSize)
-        );
+        ));
     }
 
-    return btoa(binary);
+    return btoa(chunks.join(""));
 }
 
 async function handleTcpWebSocket(request, env) {
+    const url = new URL(request.url);
+    const key = url.searchParams.get("k") || "";
+    const expected = env.WORKER_WS_AUTH_KEY || env.UPSTREAM_AUTH_KEY || "";
+    if (!expected || key !== expected) {
+        return json({ e: "unauthorized" }, 401);
+    }
+
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
@@ -201,8 +216,20 @@ async function tcpWebSocketSession(ws, env) {
     let socket = null;
     let writer = null;
     let opened = false;
+    const TCP_IDLE_TIMEOUT_MS = 300_000;
+    let idleTimer = setTimeout(() => {
+        try { ws.close(1000, "idle timeout"); } catch (_) {}
+    }, TCP_IDLE_TIMEOUT_MS);
+
+    function resetIdle() {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => {
+            try { ws.close(1000, "idle timeout"); } catch (_) {}
+        }, TCP_IDLE_TIMEOUT_MS);
+    }
 
     ws.addEventListener("message", async event => {
+        resetIdle();
         try {
             if (!opened) {
                 const hello = parseJsonControl(event.data);
@@ -217,6 +244,12 @@ async function tcpWebSocketSession(ws, env) {
                 if (!validTcpTarget(host, port)) {
                     ws.send(JSON.stringify({ ok: false, e: "bad tcp target" }));
                     ws.close(1008, "bad tcp target");
+                    return;
+                }
+
+                if (rateLimited(hello.k || "tcp-anon")) {
+                    ws.send(JSON.stringify({ ok: false, e: "rate limited" }));
+                    ws.close(1008, "rate limited");
                     return;
                 }
 
@@ -313,12 +346,21 @@ function authorizedHttpRelay(req, env) {
     return req && req.k === expected;
 }
 
+const BLOCKED_PORTS = new Set([
+    22, 23, 25, 110, 143, 445, 465, 587, 993, 995,
+    1433, 1521, 3306, 3389, 5432, 5900, 6379,
+    9200, 9300, 11211, 27017, 27018,
+]);
+
 function validTcpTarget(host, port) {
     if (!host || host.length > 253) return false;
     if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
-    if (port === 25) return false;
+    if (BLOCKED_PORTS.has(port)) return false;
     const lowered = host.toLowerCase();
     if (lowered === WORKER_URL || lowered.endsWith("." + WORKER_URL)) return false;
+    if (lowered === "localhost" || lowered.endsWith(".local") ||
+        lowered.endsWith(".internal") || lowered.startsWith("10.") ||
+        lowered.startsWith("192.168.") || lowered.startsWith("172.16.")) return false;
     return true;
 }
 
@@ -434,12 +476,6 @@ async function forwardViaUpstreamJson(req, env, upstreamUrl) {
     } finally {
         clearTimeout(timer);
     }
-}
-
-function upstreamFailure(reason, failMode) {
-    const result = upstreamFailureJson(reason, failMode);
-    if (result === null) return null;
-    return json(result, 502);
 }
 
 function upstreamFailureJson(reason, failMode) {

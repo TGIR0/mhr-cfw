@@ -2250,13 +2250,16 @@ class DomainFronter:
                 await writer.drain()
                 status, resp_headers, resp_body = await self._read_http_response(reader)
 
-            await self._release(reader, writer, created)
             if status != 200:
+                with contextlib.suppress(Exception):
+                    writer.close()
                 raise _RelayBadResponse(
                     f"upstream HTTP {status} from script "
                     f"{sid[-8:] if len(sid) > 8 else sid}",
                 )
-            return self._parse_or_raise(resp_body)
+            result = self._parse_or_raise(resp_body)
+            await self._release(reader, writer, created)
+            return result
 
         except Exception:
             with contextlib.suppress(Exception):
@@ -2343,14 +2346,14 @@ class DomainFronter:
                     await writer.drain()
                     status, resp_headers, resp_body = await self._read_http_response(reader)
 
-                await self._release(reader, writer, created)
-
             except Exception:
                 with contextlib.suppress(Exception):
                     writer.close()
                 raise
 
-        return self._parse_batch_body(resp_body, payloads)
+        result = self._parse_batch_body(resp_body, payloads)
+        await self._release(reader, writer, created)
+        return result
 
     def _parse_batch_body(self, resp_body: bytes,
                           payloads: list[dict]) -> list[bytes]:
