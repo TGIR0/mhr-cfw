@@ -128,7 +128,8 @@ class H2Transport:
 
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
+        with contextlib.suppress(OSError, AttributeError):
+            raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
         raw.setblocking(False)
 
         try:
@@ -158,15 +159,6 @@ class H2Transport:
         self._h2 = h2.connection.H2Connection(config=config)
         self._h2.initiate_connection()
 
-        # Session resumption — cache TLS session ticket
-        session = ssl_obj.session if ssl_obj else None
-        if session:
-            try:
-                self._tls_session = session.export()
-            except Exception:
-                pass
-
-        # Session resumption — cache TLS session ticket
         session = ssl_obj.session if ssl_obj else None
         if session:
             try:
@@ -257,9 +249,10 @@ class H2Transport:
             parsed = urlparse(location)
             path = parsed.path + ("?" + parsed.query if parsed.query else "")
             host = parsed.netloc or host
-            method = "GET"
-            body = None
-            headers = None  # Drop request headers on redirect
+            if status not in (307, 308):
+                method = "GET"
+                body = None
+                headers = None
 
         return status, resp_headers, resp_body
 
@@ -273,14 +266,13 @@ class H2Transport:
 
         stream_id = None
 
-        async with self._write_lock:
-            try:
+        try:
+            async with self._write_lock:
                 stream_id = self._h2.get_next_available_stream_id()
-            except Exception:
-                # Connection is stale — reconnect
-                await self.reconnect()
+        except Exception:
+            await self.reconnect()
+            async with self._write_lock:
                 stream_id = self._h2.get_next_available_stream_id()
-
             h2_headers = [
                 (":method", method),
                 (":path", path),
@@ -338,8 +330,8 @@ class H2Transport:
         sent = 0
         total = len(body)
         while body:
-            max_size = self._h2.local_settings.max_frame_size
-            window = self._h2.local_flow_control_window(stream_id)
+            max_size = self._h2.remote_settings.max_frame_size
+            window = self._h2.remote_flow_control_window(stream_id)
             send_size = min(len(body), max_size, window)
             if send_size <= 0:
                 raise BufferError(
@@ -357,7 +349,12 @@ class H2Transport:
         """Background: read H2 frames, dispatch events to waiting streams."""
         try:
             while self._connected:
-                data = await self._reader.read(65536)
+                try:
+                    async with asyncio.timeout(300):
+                        data = await self._reader.read(65536)
+                except TimeoutError:
+                    log.warning("H2 idle timeout (300s)")
+                    break
                 if not data:
                     log.warning("H2 remote closed connection")
                     break
@@ -371,9 +368,12 @@ class H2Transport:
                 for event in events:
                     self._dispatch(event)
 
-                # Send pending data (acks, window updates, ping responses)
-                async with self._write_lock:
-                    await self._flush()
+                pending = self._h2.data_to_send()
+                if pending:
+                    async with self._write_lock:
+                        if self._writer:
+                            self._writer.write(pending)
+                            await self._writer.drain()
 
         except asyncio.CancelledError:
             pass
@@ -426,6 +426,12 @@ class H2Transport:
 
         elif isinstance(event, h2.events.DataReceived):
             state.data.extend(event.data)
+            if len(state.data) > 200 * 1024 * 1024:
+                state.error = "response too large"
+                state.done.set()
+                with contextlib.suppress(Exception):
+                    self._h2.reset_stream(sid)
+                return
             self._h2.acknowledge_received_data(
                 event.flow_controlled_length, sid
             )
@@ -447,7 +453,15 @@ class H2Transport:
             pass  # h2 library auto-responds
 
         elif isinstance(event, h2.events.PingAckReceived):
-            pass  # keepalive confirmed
+            pass
+
+        elif isinstance(event, h2.events.ConnectionTerminated):
+            log.warning("H2 GOAWAY (code=%s)", event.error_code)
+            self._connected = False
+            for st in self._streams.values():
+                if not st.done.is_set():
+                    st.error = f"GOAWAY (code={event.error_code})"
+                    st.done.set()
 
     # ── Internal ──────────────────────────────────────────────────
 
