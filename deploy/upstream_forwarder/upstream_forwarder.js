@@ -58,7 +58,8 @@ const SKIP_HEADERS = new Set([
     "content-length",
     "transfer-encoding",
     "proxy-connection",
-    "proxy-authorization"
+    "proxy-authorization",
+    "accept-encoding"
 ]);
 
 const STATUS_PAGE =
@@ -90,7 +91,12 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        const raw = await readBody(req, res);
+        let raw;
+        try {
+            raw = await readBody(req, res);
+        } catch (_) {
+            return;
+        }
         let body;
         try {
             body = JSON.parse(raw);
