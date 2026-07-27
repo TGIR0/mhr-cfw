@@ -9,8 +9,9 @@ const DEFAULT_TCP_CONNECT_TIMEOUT_MS = 10000;
 const WS_TCP_PATH = "/tcp";
 
 // ── Rate limiting ──────────────────────────────────────────────
-const RATE_WINDOW_MS = 60_000;   // 1 minute window
-const RATE_MAX = 300;            // max requests per window per key
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 300;
+const MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 const _rateMap = new Map();
 
 function rateLimited(key) {
@@ -143,8 +144,6 @@ async function relayHttp(req, env) {
         }
         fetchOptions.body = bodyBytes;
     }
-
-    const MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 
     const resp = await fetch(targetUrl.toString(), fetchOptions);
     const contentLength = parseInt(resp.headers.get("content-length") || "0", 10);
@@ -288,6 +287,7 @@ async function tcpWebSocketSession(ws, env) {
     });
 
     ws.addEventListener("close", async () => {
+        clearTimeout(idleTimer);
         await closeTcpWriter(writer);
         try {
             if (socket) await socket.close();

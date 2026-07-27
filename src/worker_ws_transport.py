@@ -72,8 +72,12 @@ class WorkerWebSocketTransport:
         }
 
         try:
+            ws_url = self.config.url
+            if self.config.auth_key:
+                sep = "&" if "?" in ws_url else "?"
+                ws_url += f"{sep}k={self.config.auth_key}"
             async with connect(
-                self.config.url,
+                ws_url,
                 open_timeout=self.config.connect_timeout,
                 ping_interval=self.config.ping_interval,
                 ping_timeout=self.config.ping_timeout,
