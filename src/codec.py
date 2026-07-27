@@ -62,7 +62,8 @@ def decode(body: bytes, encoding: str) -> bytes:
 
     # Multi-coding (rare): "gzip, br" means brotli(gzip(data))
     if "," in enc:
-        for layer in reversed([s.strip() for s in enc.split(",") if s.strip()]):
+        layers = [s.strip() for s in enc.split(",") if s.strip()]
+        for layer in reversed(layers):
             body = decode(body, layer)
         return body
 

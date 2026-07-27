@@ -64,24 +64,24 @@ CANDIDATE_IPS: tuple[str, ...] = (
 )
 
 # ── Response cache ────────────────────────────────────────────────────────
-CACHE_MAX_MB            = 50
-CACHE_TTL_STATIC_LONG   = 3600   # images / fonts
-CACHE_TTL_STATIC_MED    = 1800   # css / js
+CACHE_MAX_MB            = 100
+CACHE_TTL_STATIC_LONG   = 7200   # images / fonts — 2 hours
+CACHE_TTL_STATIC_MED    = 3600   # css / js — 1 hour
 CACHE_TTL_MAX           = 86400  # hard cap on any explicit max-age
 
 
 # ── Connection pool (HTTP/1.1 to Apps Script) ─────────────────────────────
-POOL_MAX                = 50
-POOL_MIN_IDLE           = 15
-CONN_TTL                = 45.0
-SEMAPHORE_MAX           = 50
-WARM_POOL_COUNT         = 30
+POOL_MAX                = 30
+POOL_MIN_IDLE           = 5
+CONN_TTL                = 60.0
+SEMAPHORE_MAX           = 30
+WARM_POOL_COUNT         = 15
 
 
 # ── Batch windows ─────────────────────────────────────────────────────────
-BATCH_WINDOW_MICRO      = 0.005   # 5 ms
-BATCH_WINDOW_MACRO      = 0.050   # 50 ms
-BATCH_MAX               = 50
+BATCH_WINDOW_MICRO      = 0.01   # 10 ms
+BATCH_WINDOW_MACRO      = 0.1    # 100 ms
+BATCH_MAX               = 100
 
 
 # ── Fan-out relay (parallel Apps Script instances) ────────────────────────
@@ -99,17 +99,7 @@ SCRIPT_BLACKLIST_TTL    = 600.0   # 10 minutes
 FRONT_SNI_POOL_GOOGLE: tuple[str, ...] = (
     "www.google.com",
     "mail.google.com",
-	"accounts.google.com",
-    # "drive.google.com",
-    # "docs.google.com",
-    # "calendar.google.com",
-    # "maps.google.com",
-    # "chat.google.com",
-    # "translate.google.com",
-    # "play.google.com",
-    # "lens.google.com",
-    # "scholar.google.com",
-    # "chromewebstore.google.com",
+    "accounts.google.com",
 )
 
 
@@ -145,16 +135,20 @@ GOOGLE_DIRECT_EXACT_EXCLUDE = frozenset({
     "assistant.google.com",
     "lens.google.com",
 })
-GOOGLE_DIRECT_SUFFIX_EXCLUDE: tuple[str, ...] = (
-    ".meet.google.com",
-)
+GOOGLE_DIRECT_SUFFIX_EXCLUDE: tuple[str, ...] = ()
 # Hosts that are known to work better when tunneled directly.
 GOOGLE_DIRECT_ALLOW_EXACT = frozenset({
     "www.google.com",
     "google.com",
     "safebrowsing.google.com",
 })
-GOOGLE_DIRECT_ALLOW_SUFFIXES: tuple[str, ...] = ()
+GOOGLE_DIRECT_ALLOW_SUFFIXES: tuple[str, ...] = (
+    ".gstatic.com",
+    ".googlevideo.com",
+    ".ytimg.com",
+    ".ggpht.com",
+    ".youtube.com",
+)
 
 
 # ── Google-owned domain detection ─────────────────────────────────────────
@@ -208,6 +202,9 @@ STATIC_EXTS: tuple[str, ...] = (
     ".css", ".js", ".mjs", ".woff", ".woff2", ".ttf", ".eot",
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico",
     ".mp3", ".mp4", ".webm", ".wasm", ".avif",
+    ".otf", ".cur", ".eot", ".bmp", ".tiff", ".tif",
+    ".xml", ".rss", ".atom",
+    ".json",
 )
 LARGE_FILE_EXTS = frozenset({
     ".bin",

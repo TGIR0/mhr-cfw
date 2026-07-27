@@ -186,8 +186,8 @@ class ResponseCache:
             return CACHE_TTL_STATIC_LONG
         if "text/css" in ct or "javascript" in ct:
             return CACHE_TTL_STATIC_MED
-        if "text/html" in ct or "application/json" in ct:
-            return 0  # don't cache dynamic content by default
+        if "text/html" in ct:
+            return 0
 
         return 0
 
@@ -339,14 +339,16 @@ class ProxyServer:
             )
         if self.protocol_policy.quic_mode == "block":
             log.info("QUIC/UDP policy: block unless an encapsulated carrier is implemented")
-        if self.protocol_policy.worker_websocket_tcp_enabled:
-            if self.worker_ws_transport and self.worker_ws_transport.enabled:
-                log.info("Raw TCP policy: Worker WebSocket TCP relay enabled")
-            else:
-                log.warning(
-                    "tcp_relay_mode is Worker WebSocket, but worker_ws_url/auth "
-                    "or the websockets package is missing; raw TCP remains fail-closed."
-                )
+        if self.protocol_policy.tcp_relay_mode in {
+            "worker_websocket",
+            "worker_ws",
+            "websocket",
+        }:
+            log.warning(
+                "tcp_relay_mode=%s is ignored in google-relay-only mode; "
+                "raw TCP remains fail-closed.",
+                self.protocol_policy.tcp_relay_mode,
+            )
 
     # ── Host-policy helpers ───────────────────────────────────────
 
@@ -437,10 +439,8 @@ class ProxyServer:
     def _header_value(headers: dict | None, name: str) -> str:
         if not headers:
             return ""
-        for key, value in headers.items():
-            if key.lower() == name:
-                return str(value)
-        return ""
+        name_lower = name.lower()
+        return next((str(v) for k, v in headers.items() if k.lower() == name_lower), "")
 
     def _log_url(self, url: str) -> str:
         if self._privacy_log_mode == "off":
@@ -481,9 +481,38 @@ class ProxyServer:
                 upgrade = str(value).lower()
             elif low == "connection":
                 connection = str(value).lower()
-        return upgrade == "websocket" or (
-            "upgrade" in connection and "websocket" in upgrade
-        )
+        return upgrade == "websocket" or ("upgrade" in connection and "websocket" in upgrade)
+
+    @staticmethod
+    def _parse_content_length_from_block(header_block: bytes) -> int:
+        """Return Content-Length from raw header bytes. Matches only the exact header name."""
+        for raw_line in header_block.split(b"\r\n"):
+            name, sep, value = raw_line.partition(b":")
+            if not sep:
+                continue
+            if name.strip().lower() == b"content-length":
+                try:
+                    return int(value.strip())
+                except ValueError:
+                    return 0
+        return 0
+
+    @staticmethod
+    def _has_unsupported_transfer_encoding(header_block: bytes) -> bool:
+        """True when the request uses Transfer-Encoding, which we don't stream."""
+        for raw_line in header_block.split(b"\r\n"):
+            name, sep, value = raw_line.partition(b":")
+            if not sep:
+                continue
+            if name.strip().lower() != b"transfer-encoding":
+                continue
+            encodings = [
+                token.strip().lower()
+                for token in value.decode(errors="replace").split(",")
+                if token.strip()
+            ]
+            return any(token != "identity" for token in encodings)
+        return False
 
     async def _route_for_host(
         self,
@@ -1269,18 +1298,24 @@ class ProxyServer:
         headers: dict,
         body: bytes,
     ) -> bytes:
-        """Send a single plain-HTTP request directly, avoiding relay quota."""
+        """Send a single HTTP(S) request directly, avoiding relay quota."""
         parsed = urlparse(url if "://" in url else f"http://{url}")
-        if parsed.scheme.lower() != "http" or not parsed.hostname:
-            return self._compat_error_response(501, "direct plain HTTP only")
-        port = parsed.port or 80
+        scheme = parsed.scheme.lower()
+        if scheme not in {"http", "https"} or not parsed.hostname:
+            return self._compat_error_response(501, "direct HTTP(S) only")
+        port = parsed.port or (443 if scheme == "https" else 80)
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
 
-        reader, writer = await self._open_tcp_connection(
-            parsed.hostname, port, timeout=self._tcp_connect_timeout,
-        )
+        if scheme == "https":
+            reader, writer = await self._open_direct_https_request_connection(
+                parsed.hostname, port,
+            )
+        else:
+            reader, writer = await self._open_tcp_connection(
+                parsed.hostname, port, timeout=self._tcp_connect_timeout,
+            )
         try:
             skip = {
                 "connection",
@@ -1319,6 +1354,28 @@ class ProxyServer:
         finally:
             with contextlib.suppress(Exception):
                 writer.close()
+
+    async def _open_direct_https_request_connection(
+        self,
+        host: str,
+        port: int,
+    ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
+        connect_target = self._sni_rewrite_ip(host) or host
+        server_hostname = self.fronter.sni_host if connect_target != host else host
+        ssl_ctx = ssl.create_default_context()
+        if certifi is not None:
+            with contextlib.suppress(Exception):
+                ssl_ctx.load_verify_locations(cafile=certifi.where())
+        if not self.fronter.verify_ssl:
+            ssl_ctx.check_hostname = False
+            ssl_ctx.verify_mode = ssl.CERT_NONE
+        async with asyncio.timeout(self._tcp_connect_timeout):
+            return await asyncio.open_connection(
+                connect_target,
+                port,
+                ssl=ssl_ctx,
+                server_hostname=server_hostname,
+            )
 
     @staticmethod
     def _compat_error_response(status: int, message: str) -> bytes:
@@ -1468,7 +1525,8 @@ class ProxyServer:
                         headers[k.strip()] = v.strip()
 
                 # Shortening the length of X API URLs to prevent relay errors.
-                if (host == "x.com" or host == "twitter.com") and  re.match(r"/i/api/graphql/[^/]+/[^?]+\?variables=", path):
+                if (host.endswith("x.com") or host.endswith("twitter.com")) and \
+                   re.match(r"/i/api/graphql/[^/]+/[^?]+\?variables=", path):
                     path = path.split("&")[0]
 
                 # MITM traffic arrives as origin-form paths; SOCKS/plain HTTP can
@@ -1547,7 +1605,6 @@ class ProxyServer:
                         log.debug("Cache HIT: %s", self._log_url(url))
 
                 if response is None:
-                    # Relay through Apps Script
                     try:
                         response = await self._relay_smart(method, url, headers, body)
                     except Exception as e:
@@ -1796,28 +1853,38 @@ class ProxyServer:
             await writer.drain()
             return
 
-        if await self._maybe_stream_download(method, url, headers, body, writer):
+        if await self._maybe_stream_download(method, log_target, headers, body, writer):
             return
 
         # Cache check for GET
         response = None
-        if self._cache_allowed(method, url, headers, body):
-            response = self._cache.get(url)
+        if self._cache_allowed(method, log_target, headers, body):
+            response = self._cache.get(log_target)
             if response:
                 log.debug("Cache HIT (HTTP): %s", self._log_url(log_target))
 
         if response is None:
-            response = await self._relay_smart(method, url, headers, body)
+            try:
+                response = await self._relay_smart(method, log_target, headers, body)
+            except Exception as e:
+                log.error("Relay error (%s): %s", self._log_url(log_target), e)
+                err_body = f"Relay error: {e}".encode()
+                response = (
+                    b"HTTP/1.1 502 Bad Gateway\r\n"
+                    b"Content-Type: text/plain\r\n"
+                    b"Content-Length: " + str(len(err_body)).encode() + b"\r\n"
+                    b"\r\n" + err_body
+                )
             # Cache successful GET
-            if self._cache_allowed(method, url, headers, body) and response:
-                ttl = ResponseCache.parse_ttl(response, url)
+            if self._cache_allowed(method, log_target, headers, body) and response:
+                ttl = ResponseCache.parse_ttl(response, log_target)
                 if ttl > 0:
-                    self._cache.put(url, response, ttl)
+                    self._cache.put(log_target, response, ttl)
 
         if origin and response:
             response = self._inject_cors_headers(response, origin)
 
-        self._log_response_summary(url, response)
+        self._log_response_summary(log_target, response)
 
         writer.write(response)
         await writer.drain()

@@ -18,6 +18,7 @@ import socket
 import ssl
 import tempfile
 import time
+import zlib
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -41,7 +42,6 @@ from constants import (
     RELAY_TIMEOUT,
     SCRIPT_BLACKLIST_TTL,
     SEMAPHORE_MAX,
-    STATEFUL_HEADER_NAMES,
     STATIC_EXTS,
     STATS_LOG_INTERVAL,
     STATS_LOG_TOP_N,
@@ -102,10 +102,18 @@ class DomainFronter:
     _COALESCE_VARY_HEADERS = (
         "accept",
         "accept-language",
-        "user-agent",
         "sec-fetch-dest",
         "sec-fetch-mode",
         "sec-fetch-site",
+    )
+    _COALESCE_IGNORE_HEADERS = (
+        "cookie",
+        "authorization",
+        "proxy-authorization",
+        "origin",
+        "referer",
+        "cache-control",
+        "pragma",
     )
     _SAFE_RETRY_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -158,7 +166,8 @@ class DomainFronter:
         self._parallel_ranges_enabled = bool(
             config.get("parallel_range_enabled", True)
         )
-        self._direct_worker_enabled = bool(config.get("direct_worker_enabled", False))
+        direct_worker_requested = bool(config.get("direct_worker_enabled", False))
+        self._direct_worker_enabled = False
         self._direct_worker_url = self._normalize_worker_url(
             config.get("worker_url") or config.get("direct_worker_url") or "",
             config.get("worker_ws_url") or "",
@@ -240,7 +249,7 @@ class DomainFronter:
         self._batch_max = self._cfg_int(config, "batch_max", BATCH_MAX, minimum=1)
         self._batch_enabled = bool(config.get("batch_enabled", True))
         self._batch_disabled_at = 0.0
-        self._batch_cooldown = 60
+        self._batch_cooldown = 120
 
         # Request coalescing — dedup concurrent identical GETs
         self._coalesce: dict[str, list[asyncio.Future]] = {}
@@ -268,6 +277,11 @@ class DomainFronter:
         if self._parallel_relay > 1:
             log.info("Fan-out relay: %d parallel Apps Script instances per request",
                      self._parallel_relay)
+        if direct_worker_requested:
+            log.warning(
+                "direct_worker_enabled is ignored: google-relay-only routing keeps "
+                "foreign traffic on Apps Script -> Worker."
+            )
         if self._direct_worker_enabled and self._direct_worker_url:
             log.info(
                 "Direct Worker HTTP relay enabled: Apps Script is fallback-only "
@@ -557,6 +571,13 @@ class DomainFronter:
 
     @classmethod
     def _coalesce_key(cls, url: str, headers: dict | None) -> str:
+        """Build a coalescing key that ignores stateful/deduplicating headers.
+
+        We deliberately exclude cookie, authorization, origin, referer from
+        the key — including them would prevent coalescing of identical GETs
+        from different tabs/sessions, wasting quota on duplicate relay calls.
+        Only vary-sensitive headers matter for content differentiation.
+        """
         key = [url]
         if headers:
             lowered = {str(k).lower(): str(v) for k, v in headers.items()}
@@ -1790,44 +1811,62 @@ class DomainFronter:
     # Headers that must never be forwarded to the upstream server because
     # they expose the user's real IP address or internal network topology.
     _STRIP_HEADERS: frozenset = frozenset({
-        "accept-encoding",       # Apps Script auto-decompresses gzip only
-        "x-forwarded-for",       # would leak the client's real IP
+        "accept-encoding",
+        "x-forwarded-for",
         "x-forwarded-host",
         "x-forwarded-proto",
         "x-forwarded-port",
-        "x-real-ip",             # nginx / CDN header that carries real IP
-        "forwarded",             # RFC 7239 — same problem
-        "via",                   # reveals intermediate proxy hops
-        "proxy-authorization",   # never forward credentials to origin
+        "x-real-ip",
+        "forwarded",
+        "via",
+        "proxy-authorization",
         "proxy-connection",
     })
+    _STRIP_SET: frozenset = frozenset(h.lower() for h in _STRIP_HEADERS)
 
-    def _build_payload(self, method, url, headers, body):
-        """Build the JSON relay payload dict."""
-        payload = {
-            "m": method,
-            "u": url,
-            # Let the browser/app see origin redirects and cookies directly.
-            "r": False,
-        }
+    def _build_payload(self, method: str, url: str,
+                       headers: dict | None, body: bytes) -> dict:
+        """Build a compact, efficient JSON relay payload.
+
+        Payload structure:
+            m  — method (GET/POST/etc)
+            u  — full URL
+            h  — filtered request headers (stripped of leaky headers)
+            b  — base64-encoded body (gzip compressed when > 256 bytes)
+            ct — content-type header (when body present)
+            r  — follow redirects (always False for relay safety)
+            f  — forwarder flag (1/0, only when forwarder_hosts configured)
+        """
+        payload: dict = {"m": method, "u": url, "r": False}
+
+        # Filter headers — strip ones that leak real IP / internal topology
         if headers:
-            # Strip headers that would leak the user's real IP or expose
-            # internal proxy metadata to the upstream destination server.
-            filt = {k: v for k, v in headers.items()
-                    if k.lower() not in self._STRIP_HEADERS}
-            payload["h"] = filt if filt else headers
+            stripped = {k: v for k, v in headers.items()
+                        if k.lower() not in self._STRIP_SET}
+            if stripped:
+                payload["h"] = stripped
+
+        # Encode body with gzip compression for payloads > 256 bytes
         if body:
-            payload["b"] = base64.b64encode(body).decode()
+            if len(body) > 256:
+                compressed = zlib.compress(body, 6)
+                payload["b"] = base64.b64encode(compressed).decode("ascii")
+                # Signal to GAS that body is compressed (GS compresses before sending)
+                payload["ce"] = "gzip"
+            else:
+                payload["b"] = base64.b64encode(body).decode("ascii")
+            # Forward content-type when body present
             ct = headers.get("Content-Type") or headers.get("content-type")
             if ct:
                 payload["ct"] = ct
-        # Only emit 'f' when scoped; Worker treats missing 'f' as forward (legacy compat).
-        exact, suffixes = self._forwarder_hosts
-        if exact or suffixes:
+
+        # Forwarder flag — only emit when configured
+        if self._forwarder_hosts[0] or self._forwarder_hosts[1]:
             host = urlparse(url).hostname or ""
             payload["f"] = 1 if self._host_matches_rules(
                 host, self._forwarder_hosts
             ) else 0
+
         return payload
 
     @classmethod
@@ -1851,11 +1890,19 @@ class DomainFronter:
         if method not in {"GET", "HEAD"} or body:
             return True
 
+        # Static assets are always batchable/coalescable regardless of headers.
+        if cls._is_static_asset_url(url):
+            return False
+
         if headers:
-            for name in STATEFUL_HEADER_NAMES:
+            # Headers that change response content — force stateful.
+            for name in ("cookie", "authorization", "proxy-authorization",
+                         "if-none-match", "if-modified-since",
+                         "cache-control", "pragma"):
                 if cls._header_value(headers, name):
                     return True
 
+            # Headers that affect vary but are safe for batching.
             accept = cls._header_value(headers, "accept").lower()
             if "text/html" in accept or "application/json" in accept:
                 return True
@@ -1864,7 +1911,7 @@ class DomainFronter:
             if fetch_mode in {"navigate", "cors"}:
                 return True
 
-        return not cls._is_static_asset_url(url)
+        return False
 
     # ── Batch collector ───────────────────────────────────────────
 
@@ -2116,16 +2163,12 @@ class DomainFronter:
 
     async def _relay_single_h2(self, payload: dict,
                                sid: str | None = None) -> bytes:
-        """Execute a relay through HTTP/2 multiplexing.
-
-        Uses the shared H2 connection — no pool checkout needed.
-        Many concurrent calls all share one TLS connection.
-        """
+        """Execute a relay through HTTP/2 multiplexing with optimized serialization."""
         if sid is None:
             sid = self._script_id_for_key(self._host_key(payload.get("u")))
         full_payload = dict(payload)
         full_payload["k"] = self.auth_key
-        json_body = json.dumps(full_payload).encode()
+        json_body = json.dumps(full_payload, separators=(",", ":")).encode()
 
         path = self._exec_path_for_sid(sid)
 
@@ -2396,7 +2439,7 @@ class DomainFronter:
             # No framing — short timeout read (keep-alive safe)
             while True:
                 try:
-                    async with asyncio.timeout(2):
+                    async with asyncio.timeout(0.5):
                         chunk = await reader.read(65536)
                     if not chunk:
                         break
@@ -2464,45 +2507,48 @@ class DomainFronter:
 
     # ── Response parsing ──────────────────────────────────────────
 
+    _RESP_SKIP: frozenset = frozenset({
+        "transfer-encoding", "connection", "keep-alive",
+        "content-length", "content-encoding",
+    })
+
     def _parse_relay_response(self, body: bytes) -> bytes:
         """Parse JSON from Apps Script and reconstruct an HTTP response."""
+        return self._parse_json_response(body, return_on_error=True)
+
+    def _parse_or_raise(self, body: bytes) -> bytes:
+        """Like `_parse_relay_response` but raises `_RelayBadResponse` on failure."""
+        return self._parse_json_response(body, return_on_error=False)
+
+    def _parse_json_response(self, body: bytes, *, return_on_error: bool) -> bytes:
+        """Centralized JSON response parsing for relay responses."""
         text = body.decode(errors="replace").strip()
         if not text:
-            return self._error_response(502, "Empty response from relay")
+            err = "empty response"
+            if return_on_error:
+                return self._error_response(502, err)
+            raise _RelayBadResponse(err)
 
+        data: dict | None = None
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
             m = re.search(r'\{.*\}', text, re.DOTALL)
             if m:
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     data = json.loads(m.group())
-                except json.JSONDecodeError:
-                    return self._error_response(502, f"Bad JSON: {text[:200]}")
-            else:
-                return self._error_response(502, f"No JSON: {text[:200]}")
 
-        return self._parse_relay_json(data)
-
-    def _parse_or_raise(self, body: bytes) -> bytes:
-        """Like `_parse_relay_response` but raises `_RelayBadResponse` on failure."""
-        text = body.decode(errors="replace").strip()
-        if not text:
-            raise _RelayBadResponse("empty response")
-
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError as exc:
-            m = re.search(r'\{.*\}', text, re.DOTALL)
-            if not m:
-                raise _RelayBadResponse(f"non-JSON: {text[:120]}") from exc
-            try:
-                data = json.loads(m.group())
-            except json.JSONDecodeError as err:
-                raise _RelayBadResponse(f"bad JSON: {text[:120]}") from err
+        if data is None:
+            err = f"non-JSON: {text[:120]}" if return_on_error else f"bad JSON: {text[:120]}"
+            if return_on_error:
+                return self._error_response(502, err)
+            raise _RelayBadResponse(err)
 
         if "e" in data:
-            raise _RelayBadResponse(f"relay error: {data['e']}")
+            err = f"relay error: {data['e']}"
+            if return_on_error:
+                return self._error_response(502, err)
+            raise _RelayBadResponse(err)
         return self._parse_relay_json(data)
 
     def _parse_relay_json(self, data: dict) -> bytes:
@@ -2513,6 +2559,12 @@ class DomainFronter:
         status = data.get("s", 200)
         resp_headers = data.get("h", {})
         resp_body = base64.b64decode(data.get("b", ""))
+
+        # Decompress gzip-compressed body if signaled by `ce` field
+        if data.get("ce") == "gzip":
+            with contextlib.suppress(zlib.error):
+                resp_body = zlib.decompress(resp_body, wbits=zlib.MAX_WBITS)
+
         if len(resp_body) > self._max_response_body_bytes:
             return self._error_response(
                 502,
@@ -2521,33 +2573,30 @@ class DomainFronter:
                 "Increase max_response_body_bytes if your system has enough RAM.",
             )
 
-        status_text = {200: "OK", 206: "Partial Content",
-                       301: "Moved", 302: "Found", 304: "Not Modified",
-                       400: "Bad Request", 403: "Forbidden", 404: "Not Found",
-                       500: "Internal Server Error"}.get(status, "OK")
-        result = f"HTTP/1.1 {status} {status_text}\r\n"
-
-        skip = {"transfer-encoding", "connection", "keep-alive",
-                "content-length", "content-encoding"}
+        import http as _http
+        try:
+            status_text = _http.HTTPStatus(status).phrase
+        except ValueError:
+            status_text = "Unknown"
+        # Build header lines efficiently using list join
+        hdr_lines: list[str] = [f"HTTP/1.1 {status} {status_text}"]
         for k, v in resp_headers.items():
-            if k.lower() in skip:
+            kl = k.lower()
+            if kl in self._RESP_SKIP:
                 continue
-            # Apps Script returns multi-valued headers (e.g. Set-Cookie) as a
-            # JavaScript array. Emit each value as its own header line.
-            # A single string that holds multiple Set-Cookie values joined
-            # with ", " also needs to be split, otherwise the browser sees
-            # one malformed cookie and sites like x.com fail.
+            # Handle multi-value headers (arrays from Apps Script)
             values = v if isinstance(v, list) else [v]
-            if k.lower() == "set-cookie":
-                expanded = []
+            if kl == "set-cookie":
+                expanded: list[str] = []
                 for item in values:
                     expanded.extend(self._split_set_cookie(str(item)))
                 values = expanded
             for val in values:
-                result += f"{k}: {val}\r\n"
-        result += f"Content-Length: {len(resp_body)}\r\n"
-        result += "\r\n"
-        return result.encode() + resp_body
+                hdr_lines.append(f"{k}: {val}")
+        hdr_lines.append(f"Content-Length: {len(resp_body)}")
+        hdr_lines.append("")
+
+        return "\r\n".join(hdr_lines).encode() + resp_body
 
     @staticmethod
     def _split_set_cookie(blob: str) -> list[str]:
@@ -2561,8 +2610,6 @@ class DomainFronter:
         """
         if not blob:
             return []
-        # Split on ", " but only when the following text looks like the start
-        # of a new cookie (a token followed by '=').
         parts = re.split(r",\s*(?=[A-Za-z0-9!#$%&'*+\-.^_`|~]+=)", blob)
         return [p.strip() for p in parts if p.strip()]
 
@@ -2583,10 +2630,10 @@ class DomainFronter:
 
     def _error_response(self, status: int, message: str) -> bytes:
         body = f"<html><body><h1>{status}</h1><p>{message}</p></body></html>"
+        body_bytes = body.encode("utf-8")
         return (
             f"HTTP/1.1 {status} Error\r\n"
-            f"Content-Type: text/html\r\n"
-            f"Content-Length: {len(body)}\r\n"
+            f"Content-Type: text/html; charset=utf-8\r\n"
+            f"Content-Length: {len(body_bytes)}\r\n"
             f"\r\n"
-            f"{body}"
-        ).encode()
+        ).encode() + body_bytes

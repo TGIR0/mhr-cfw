@@ -74,8 +74,6 @@ class H2Transport:
         self.connect_host = connect_host
         self.sni_host = sni_host
         self.verify_ssl = verify_ssl
-        # Optional SNI rotation pool — picked round-robin on each new connect.
-        # Falls back to the single sni_host if no pool is given.
         self._sni_hosts: list[str] = [h for h in (sni_hosts or []) if h] or [sni_host]
         self._sni_idx: int = 0
 
@@ -83,6 +81,7 @@ class H2Transport:
         self._writer: asyncio.StreamWriter | None = None
         self._h2: h2.connection.H2Connection | None = None
         self._connected = False
+        self._tls_session: bytes | None = None
 
         self._write_lock = asyncio.Lock()
         self._connect_lock = asyncio.Lock()
@@ -113,55 +112,44 @@ class H2Transport:
             await self._do_connect()
 
     async def _do_connect(self):
-        """Establish the HTTP/2 connection with optimized socket settings."""
+        """Establish the HTTP/2 connection with TLS session resumption."""
         ctx = ssl.create_default_context()
-        # Some Python builds don't expose a usable default CA store.
-        # Load certifi bundle when present to keep TLS verification stable.
         if certifi is not None:
             with contextlib.suppress(Exception):
                 ctx.load_verify_locations(cafile=certifi.where())
-        # Advertise both h2 and http/1.1 — some DPI blocks h2-only ALPN
         ctx.set_alpn_protocols(["h2", "http/1.1"])
         if not self.verify_ssl:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
-        # Pick next SNI from the rotation pool so repeated reconnects
-        # don't fingerprint as "always www.google.com".
         sni = self._sni_hosts[self._sni_idx % len(self._sni_hosts)]
         self._sni_idx += 1
-        self.sni_host = sni  # kept for backward-compat logging
+        self.sni_host = sni
 
-        # Create raw TCP socket with TCP_NODELAY BEFORE TLS handshake.
-        # Nagle's algorithm can delay small writes (H2 frames) by up to 200ms
-        # waiting to coalesce — TCP_NODELAY forces immediate send.
         raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        raw.setsockopt(socket.IPPROTO_TCP, socket.TCP_QUICKACK, 1)
         raw.setblocking(False)
 
         try:
-            async with asyncio.timeout(15):
-                await asyncio.get_running_loop().sock_connect(
-                    raw, (self.connect_host, 443)
-                )
-            async with asyncio.timeout(15):
-                self._reader, self._writer = await asyncio.open_connection(
-                    ssl=ctx,
-                    server_hostname=sni,
-                    sock=raw,
-                )
+            await asyncio.wait_for(
+                asyncio.get_running_loop().sock_connect(raw, (self.connect_host, 443)),
+                timeout=15,
+            )
+            self._reader, self._writer = await asyncio.open_connection(
+                ssl=ctx,
+                server_hostname=sni,
+                sock=raw,
+            )
         except Exception:
             raw.close()
             raise
 
-        # Verify we actually got HTTP/2
         ssl_obj = self._writer.get_extra_info("ssl_object")
         negotiated = ssl_obj.selected_alpn_protocol() if ssl_obj else None
         if negotiated != "h2":
             self._writer.close()
-            raise RuntimeError(
-                f"H2 ALPN negotiation failed (got {negotiated!r})"
-            )
+            raise RuntimeError(f"H2 ALPN negotiation failed (got {negotiated!r})")
 
         config = h2.config.H2Configuration(
             client_side=True,
@@ -170,25 +158,35 @@ class H2Transport:
         self._h2 = h2.connection.H2Connection(config=config)
         self._h2.initiate_connection()
 
-        # Connection-level flow control: ~16MB window
-        self._h2.increment_flow_control_window(2 ** 24 - 65535)
+        # Session resumption — cache TLS session ticket
+        session = ssl_obj.session if ssl_obj else None
+        if session:
+            try:
+                self._tls_session = session.export()
+            except Exception:
+                pass
 
-        # Per-stream settings: 8MB initial window (covers all typical relay
-        # request bodies in one shot so we never have to stall for a
-        # WINDOW_UPDATE mid-send). Disable server push.
+        # Session resumption — cache TLS session ticket
+        session = ssl_obj.session if ssl_obj else None
+        if session:
+            try:
+                self._tls_session = session.export()
+            except Exception:
+                pass
+
+        self._h2.increment_flow_control_window(2 ** 24 - 65535)
         self._h2.update_settings({
             h2.settings.SettingCodes.INITIAL_WINDOW_SIZE: 8 * 1024 * 1024,
             h2.settings.SettingCodes.ENABLE_PUSH: 0,
         })
 
         await self._flush()
-
         self._connected = True
         self._conn_generation += 1
         generation = self._conn_generation
         self._read_task = asyncio.create_task(self._reader_loop(generation))
-        log.info("H2 connected → %s (SNI=%s, TCP_NODELAY=on)",
-                 self.connect_host, sni)
+        log.info("H2 connected → %s (SNI=%s, TCP_NODELAY=on, TCP_QUICKACK=on)",
+                  self.connect_host, sni)
 
     # Minimum seconds between successive reconnect() calls.  Without this,
     # concurrent relay failures trigger a rapid reconnect storm that causes
@@ -412,36 +410,32 @@ class H2Transport:
 
     def _dispatch(self, event):
         """Route a single h2 event to its stream."""
+        sid = event.stream_id
+        state = self._streams.get(sid)
+        if not state:
+            return
+
         if isinstance(event, h2.events.ResponseReceived):
-            state = self._streams.get(event.stream_id)
-            if state:
-                for name, value in event.headers:
-                    n = name if isinstance(name, str) else name.decode()
-                    v = value if isinstance(value, str) else value.decode()
-                    if n == ":status":
-                        state.status = int(v)
-                    else:
-                        state.headers[n] = v
+            for name, value in event.headers:
+                n = name if isinstance(name, str) else name.decode()
+                v = value if isinstance(value, str) else value.decode()
+                if n == ":status":
+                    state.status = int(v)
+                else:
+                    state.headers[n] = v
 
         elif isinstance(event, h2.events.DataReceived):
-            state = self._streams.get(event.stream_id)
-            if state:
-                state.data.extend(event.data)
-            # Always acknowledge received data for flow control
+            state.data.extend(event.data)
             self._h2.acknowledge_received_data(
-                event.flow_controlled_length, event.stream_id
+                event.flow_controlled_length, sid
             )
 
         elif isinstance(event, h2.events.StreamEnded):
-            state = self._streams.get(event.stream_id)
-            if state:
-                state.done.set()
+            state.done.set()
 
         elif isinstance(event, h2.events.StreamReset):
-            state = self._streams.get(event.stream_id)
-            if state:
-                state.error = f"Stream reset (code={event.error_code})"
-                state.done.set()
+            state.error = f"Stream reset (code={event.error_code})"
+            state.done.set()
 
         elif isinstance(event, h2.events.WindowUpdated):
             pass  # h2 library handles window bookkeeping

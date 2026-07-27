@@ -127,10 +127,21 @@ server.listen(PORT, HOST, () => {
     console.log("upstream_forwarder listening on " + HOST + ":" + PORT);
 });
 
+const MAX_BODY_BYTES = 100 * 1024 * 1024; // 100 MB
+
 function readBody(req) {
     return new Promise((resolve, reject) => {
         const chunks = [];
-        req.on("data", c => chunks.push(c));
+        let size = 0;
+        req.on("data", c => {
+            size += c.length;
+            if (size > MAX_BODY_BYTES) {
+                req.destroy();
+                reject(new Error("body too large"));
+                return;
+            }
+            chunks.push(c);
+        });
         req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
         req.on("error", reject);
     });

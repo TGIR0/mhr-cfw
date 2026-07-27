@@ -57,17 +57,20 @@ class ProtocolPolicy:
 
     @property
     def worker_websocket_tcp_enabled(self) -> bool:
-        return self._tcp_relay_mode in {"worker_websocket", "worker_ws", "websocket"}
+        return False
 
     def tcp_decision(self, host: str, port: int, *, bypassed: bool = False) -> ProtocolDecision:
         if bypassed:
             return ProtocolDecision(True, False, False, "host is explicitly bypassed")
         if port in TCP_HTTP_PORTS:
             return ProtocolDecision(False, True, False, "HTTP(S) relay supported")
-        if self.worker_websocket_tcp_enabled:
-            return ProtocolDecision(False, True, False, "Worker WebSocket TCP relay enabled")
         if self._allow_direct_tcp:
-            return ProtocolDecision(True, False, False, "direct TCP explicitly enabled")
+            return ProtocolDecision(
+                False,
+                False,
+                True,
+                "direct raw TCP is disabled by compatibility policy",
+            )
         return ProtocolDecision(False, False, True, "raw TCP relay is not implemented")
 
     def socks_command_decision(self, cmd: int) -> ProtocolDecision:
@@ -81,8 +84,6 @@ class ProtocolPolicy:
                     True,
                     "UDP encapsulation is configured but not implemented yet",
                 )
-            if self._allow_direct_udp:
-                return ProtocolDecision(True, False, False, "direct UDP explicitly enabled")
             return ProtocolDecision(False, False, True, "UDP associate disabled")
         if cmd == SOCKS5_CMD_BIND:
             return ProtocolDecision(False, False, True, "SOCKS5 BIND unsupported")
@@ -101,5 +102,10 @@ class ProtocolPolicy:
                 "UDP encapsulation is configured but not implemented yet",
             )
         if self._allow_direct_udp:
-            return ProtocolDecision(True, False, False, "direct UDP explicitly enabled")
+            return ProtocolDecision(
+                False,
+                False,
+                True,
+                "direct UDP is disabled by compatibility policy",
+            )
         return ProtocolDecision(False, False, True, "UDP disabled")

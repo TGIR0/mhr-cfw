@@ -32,13 +32,13 @@ def test_allows_http_and_https_relay_by_default():
     assert proxy._tunnel_reject_reason("example.com", 443) is None
 
 
-def test_allows_raw_tcp_when_worker_websocket_mode_is_configured():
+def test_worker_websocket_mode_does_not_enable_raw_tcp():
     proxy = make_proxy(
         tcp_relay_mode="worker_websocket",
         worker_ws_url="wss://relay.example/tcp",
     )
 
-    assert proxy._tunnel_reject_reason("example.com", 5228) is None
+    assert proxy._tunnel_reject_reason("example.com", 5228) == "raw TCP relay is not implemented"
 
 
 def test_block_hosts_override_worker_websocket_mode():

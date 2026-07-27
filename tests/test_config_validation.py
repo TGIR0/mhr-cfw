@@ -104,39 +104,41 @@ def test_udp_and_quic_non_default_modes_warn_not_error():
     assert not has_errors(issues)
 
 
-def test_worker_websocket_requires_wss_url():
+def test_worker_websocket_mode_warns_but_stays_fail_closed():
     issues = validate_config(valid_config(tcp_relay_mode="worker_websocket"))
 
-    assert (ERROR, "worker_ws_url") in severities(issues)
-    assert has_errors(issues)
+    assert (WARNING, "tcp_relay_mode") in severities(issues)
+    assert not has_errors(issues)
 
 
-def test_worker_websocket_validates_url_scheme():
+def test_worker_websocket_url_is_ignored_in_google_relay_only_mode():
     issues = validate_config(valid_config(
         tcp_relay_mode="worker_websocket",
         worker_ws_url="https://relay.example/tcp",
     ))
 
-    assert (ERROR, "worker_ws_url") in severities(issues)
+    assert (WARNING, "tcp_relay_mode") in severities(issues)
+    assert not has_errors(issues)
 
 
-def test_worker_websocket_accepts_wss_url_and_auth_key_fallback():
+def test_worker_websocket_wss_url_is_still_ignored():
     issues = validate_config(valid_config(
         tcp_relay_mode="worker_websocket",
         worker_ws_url="wss://relay.example/tcp",
     ))
 
+    assert (WARNING, "tcp_relay_mode") in severities(issues)
     assert not has_errors(issues)
 
 
-def test_direct_worker_requires_https_worker_url():
+def test_direct_worker_is_ignored_in_google_relay_only_mode():
     issues = validate_config(valid_config(
         direct_worker_enabled=True,
         worker_url="http://relay.example",
     ))
 
-    assert (ERROR, "worker_url") in severities(issues)
-    assert has_errors(issues)
+    assert (WARNING, "direct_worker_enabled") in severities(issues)
+    assert not has_errors(issues)
 
 
 def test_direct_worker_derives_https_url_from_websocket_url():
@@ -161,5 +163,5 @@ def test_direct_worker_requires_non_placeholder_auth():
 
     keys = severities(issues)
     assert (ERROR, "auth_key") in keys
-    assert (ERROR, "worker_auth_key") in severities(issues)
+    assert (WARNING, "direct_worker_enabled") in severities(issues)
     assert has_errors(issues)

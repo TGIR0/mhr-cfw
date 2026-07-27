@@ -110,11 +110,19 @@ function _buildWorkerPayload(req) {
     u: req.u,
     m: (req.m || "GET").toUpperCase(),
     h: headers,
-    b: req.b || null,
-    ct: req.ct || null,
     r: req.r !== false
   };
 
+  // Handle compressed body — decompress on Worker side
+  if (req.b) {
+    out.b = req.b;
+    // Signal that body is gzip-compressed (Apps Script base64 decodes, Worker decompresses)
+    if (req.ce === "gzip") {
+      out.ce = "gzip";
+    }
+  }
+
+  if (req.ct) out.ct = req.ct;
   if (typeof req.f === "number") out.f = req.f;
   if (WORKER_AUTH_KEY) out.k = WORKER_AUTH_KEY;
   return out;

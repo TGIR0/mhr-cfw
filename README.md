@@ -11,6 +11,15 @@ first, then leave the codebase ready for a future Rust rewrite.
 
 ## Current Architecture
 
+Smart routing keeps Google quota for only the traffic that needs the relay:
+
+```text
+Iranian domains/IPs        -> direct local internet
+Allowed Google domains     -> Google/fronted direct path
+Foreign HTTP(S) traffic    -> Google Apps Script -> Cloudflare Worker
+UDP/QUIC/raw TCP/WebSocket -> fail-closed so apps fall back to TCP/HTTPS
+```
+
 ```text
 Browser / app
   -> local HTTP or SOCKS5 proxy
@@ -36,11 +45,8 @@ and receives a raw HTTP response reconstructed from the Worker response.
 - HTTPS MITM for browser-originated HTTP traffic.
 - Google Apps Script relay using `UrlFetchApp.fetch()` and `fetchAll()`.
 - Cloudflare Worker HTTP exit with optional VPS forwarder for stable IP.
-- Optional direct Worker HTTP relay. When the Worker hostname is reachable, the
-  local proxy sends HTTP relay payloads straight to Worker and keeps Apps Script
-  as fallback, reducing Google URL Fetch quota use.
-- Optional Worker WebSocket TCP carrier for raw TCP streams, disabled by default
-  and separate from the Apps Script path.
+- Central `RoutingPolicy`: `.ir`/Iran GeoIP destinations go direct, allowed
+  Google hosts use the fronted direct path, and foreign HTTP(S) uses the relay.
 - HTTP/2 multiplexing from the local relay to Google when the `h2` package and
   negotiated ALPN support are available.
 - Parallel range download optimization for large HTTP downloads.
@@ -62,8 +68,9 @@ unsupported transport claims.
 - UDP and QUIC support must therefore be implemented as a separate tunnel design
   with explicit encapsulation or a self-hosted forwarder. It should not be
   described as direct Apps Script UDP/QUIC support.
-- `allow_direct_tcp` and `allow_direct_udp` default to `false`. Turning them on
-  trades leak resistance for compatibility and should only be used deliberately.
+- `allow_direct_tcp`, `allow_direct_udp`, `tcp_relay_mode=worker_websocket`,
+  and `direct_worker_enabled` are ignored by the current google-relay-only
+  policy; unsupported traffic remains fail-closed.
 
 References:
 
@@ -99,13 +106,11 @@ pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --tr
 
 1. Create a Cloudflare Worker and paste `deploy/cloudflare-worker/worker.js`.
 2. Set `WORKER_URL` in the Worker file to your own `*.workers.dev` hostname.
-3. If you enable direct Worker HTTP relay, set the Worker secret
-   `WORKER_AUTH_KEY` to the same value as local `worker_auth_key`.
-4. Create a Google Apps Script web app and paste `deploy/gas/Code.gs`.
-5. Set `AUTH_KEY` and `WORKER_URL` in `Code.gs`. If the Worker secret
+3. Create a Google Apps Script web app and paste `deploy/gas/Code.gs`.
+4. Set `AUTH_KEY` and `WORKER_URL` in `Code.gs`. If the Worker secret
    `WORKER_AUTH_KEY` is set, put the same value in `Code.gs` too.
-6. Deploy the Apps Script as a Web app with access set to `Anyone`.
-7. Copy the Apps Script Deployment ID.
+5. Deploy the Apps Script as a Web app with access set to `Anyone`.
+6. Copy the Apps Script Deployment ID.
 
 ## Configure
 
@@ -135,24 +140,25 @@ Validate the config without starting listeners:
 python main.py --check-config
 ```
 
+Check one routing decision without starting listeners:
+
+```bash
+python main.py --routing-check example.ir
+```
+
 Important transport and speed knobs:
 
-- `direct_worker_enabled`: when `true`, HTTP relay payloads try
-  `worker_url` first and use Apps Script only after a circuit-breaker failure.
-  This is the lowest-quota path, but only works when the Worker hostname is
-  reachable from the client network.
-- `worker_url` and `worker_auth_key`: HTTPS Worker endpoint and shared secret
-  for the direct HTTP relay. Set Worker secret `WORKER_AUTH_KEY` to match.
-- `direct_worker_concurrency`, `direct_worker_pool_max`,
-  `direct_worker_conn_ttl`: direct Worker keep-alive pool tuning for lower TLS
-  handshake overhead and lower latency.
+- `routing_mode`: `compat_smart` enables quota-saving route decisions.
+- `iran_direct_enabled`, `iran_domain_suffixes`, `iran_geoip_enabled`,
+  `iran_geoip_db`: send Iranian domains/IPs directly before touching relay quota.
+- `google_fronted_direct_enabled`: keeps allowed Google hosts on the fronted
+  direct path.
+- `relay_foreign_enabled`: keeps foreign HTTP(S) on Apps Script -> Worker.
+- `websocket_mode`: `http_only`; WebSocket upgrades that cannot be carried over
+  Apps Script fail closed.
 - `privacy_log_mode`: `host` by default, so logs avoid full paths/query strings.
   Use `full` only for local debugging, or `off` for minimal request logging.
-- `tcp_relay_mode`: `http_only` by default. Set `worker_websocket` only after
-  deploying the Worker `/tcp` endpoint and setting `worker_ws_url`.
-- `worker_ws_url`: `wss://.../tcp` endpoint for TCP-over-Worker-WebSocket.
-  This path skips Apps Script quota, but it is direct to Cloudflare Worker and
-  only works where the Worker hostname itself is reachable.
+- `tcp_relay_mode`: keep `http_only`; raw TCP is blocked in this phase.
 - `udp_mode`: `disabled` today; future values will use encapsulated carriers.
 - `quic_mode`: `block` by default to avoid UDP/QUIC leaks.
 - `kcp_enabled`, `kcp_mtu`, `kcp_window`, `kcp_resend_after`: reliability
@@ -201,13 +207,6 @@ on a VPS with a stable IP and configure these Worker variables/secrets:
 | `UPSTREAM_FAIL_MODE` | Variable | `closed` or `open` |
 | `UPSTREAM_TIMEOUT_MS` | Variable | `25000` |
 
-For the optional Worker WebSocket TCP carrier, set this Worker secret and match
-it in local `worker_ws_auth_key` (or reuse local `auth_key`):
-
-| Name | Type | Example |
-| --- | --- | --- |
-| `WORKER_WS_AUTH_KEY` | Secret | long random secret |
-
 ## Dependency Baseline
 
 Runtime dependencies are intentionally small:
@@ -216,7 +215,8 @@ Runtime dependencies are intentionally small:
 - `h2`: HTTP/2 client transport to Google.
 - `certifi`: consistent CA bundle in containers and embedded Python builds.
 - `brotli` and `zstandard`: response decoding for modern websites.
-- `websockets`: optional Worker WebSocket TCP carrier.
+- `websockets`: retained for future documented carrier experiments, not enabled
+  in the current google-relay-only policy.
 - `aioquic`, `h11`, `anyio`: planned transport work, kept explicit so future
   QUIC and HTTP experiments use maintained protocol libraries.
 - `ikcp`: optional future native KCP carrier candidate where Python support is

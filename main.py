@@ -10,6 +10,7 @@ while the encrypted Host header points at script.google.com).
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -17,6 +18,7 @@ import sys
 
 import bootstrap  # noqa: F401  # side-effect: keep historical ./src imports working
 from cert_installer import install_ca, is_ca_trusted, uninstall_ca
+from config_validation import format_issues, has_errors, validate_config
 from constants import (
     GOOGLE_DIRECT_ALLOW_EXACT,
     GOOGLE_DIRECT_ALLOW_SUFFIXES,
@@ -29,7 +31,6 @@ from constants import (
     SNI_REWRITE_SUFFIXES,
     __version__,
 )
-from config_validation import format_issues, has_errors, validate_config
 from google_ip_scanner import scan_sync
 from lan_utils import log_lan_access
 from logging_utils import configure as configure_logging
@@ -231,7 +232,7 @@ def main():
             sys.exit(1)
         policy = _routing_policy_for_config(config)
         result = policy.decide_host(args.routing_check)
-        print(f"{result.decision.value}: {result.reason}")
+        print(result.decision.value)
         sys.exit(0)
     if has_errors(issues):
         print(format_issues(issues))
@@ -309,22 +310,43 @@ def main():
 
 
 def _make_exception_handler(log):
-    """Return an asyncio exception handler that silences Windows WinError 10054
-    noise from connection cleanup (ConnectionResetError in
-    _ProactorBasePipeTransport._call_connection_lost), which is harmless but
-    verbose on Python/Windows when a remote host force-closes a socket."""
+    """Return an asyncio exception handler for benign Windows Proactor noise."""
     def handler(loop, context):
         exc = context.get("exception")
-        cb  = context.get("handle") or context.get("source_traceback", "")
-        if (
-            isinstance(exc, ConnectionResetError)
-            and "_call_connection_lost" in str(cb)
-        ):
-            return  # suppress: benign Windows socket cleanup race
+        cb = context.get("handle") or context.get("source_traceback", "")
+        if isinstance(exc, ConnectionResetError) and "_call_connection_lost" in str(cb):
+            return
+        if _is_windows_transient_accept(context):
+            return
         log.error("[asyncio]  %s", context.get("message", context))
         if exc:
             loop.default_exception_handler(context)
     return handler
+
+
+def _is_windows_transient_accept(context: dict) -> bool:
+    exc = context.get("exception")
+    if not isinstance(exc, OSError):
+        return False
+    winerror = getattr(exc, "winerror", None)
+    if winerror not in {64, 995, 10038, 10054}:
+        return False
+    future = context.get("future") or context.get("task")
+    coro_name = ""
+    if future is not None:
+        get_coro = getattr(future, "get_coro", None)
+        if callable(get_coro):
+            with contextlib.suppress(Exception):
+                coro = get_coro()
+                coro_name = getattr(coro, "__qualname__", "") or repr(coro)
+        if not coro_name:
+            coro_name = repr(future)
+    marker = " ".join((
+        str(context.get("message", "")),
+        coro_name,
+        str(context.get("handle", "")),
+    ))
+    return "accept" in marker.lower() or "_call_connection_lost" in marker
 
 
 async def _run(config):

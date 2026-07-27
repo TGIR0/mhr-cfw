@@ -30,15 +30,15 @@ def test_http_ports_are_relayable_without_direct_leak():
     assert not decision.fail_closed
 
 
-def test_worker_websocket_mode_relays_raw_tcp():
+def test_worker_websocket_mode_is_ignored_for_google_relay_only():
     policy = ProtocolPolicy({"tcp_relay_mode": "worker_websocket"})
 
     decision = policy.tcp_decision("example.com", 5228)
 
-    assert decision.allow_relay
+    assert not decision.allow_relay
     assert not decision.allow_direct
-    assert not decision.fail_closed
-    assert policy.worker_websocket_tcp_enabled
+    assert decision.fail_closed
+    assert not policy.worker_websocket_tcp_enabled
 
 
 def test_socks5_commands_are_fail_closed_except_connect():
@@ -51,10 +51,10 @@ def test_socks5_commands_are_fail_closed_except_connect():
     assert bind.fail_closed
 
 
-def test_direct_udp_is_explicit_opt_in():
+def test_direct_udp_is_fail_closed_even_when_requested():
     policy = ProtocolPolicy({"allow_direct_udp": True, "quic_mode": "direct"})
 
     decision = policy.udp_decision("example.com", 1234)
 
-    assert decision.allow_direct
-    assert not decision.fail_closed
+    assert not decision.allow_direct
+    assert decision.fail_closed

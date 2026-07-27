@@ -62,9 +62,7 @@ class MITMCertManager:
     def _ensure_ca(self):
         if os.path.exists(CA_KEY_FILE) and os.path.exists(CA_CERT_FILE):
             with open(CA_KEY_FILE, "rb") as f:
-                self._ca_key = serialization.load_pem_private_key(
-                    f.read(), password=None
-                )
+                self._ca_key = serialization.load_pem_private_key(f.read(), password=None)
             with open(CA_CERT_FILE, "rb") as f:
                 self._ca_cert = x509.load_pem_x509_certificate(f.read())
             log.info("Loaded CA from %s", CA_DIR)
@@ -73,10 +71,7 @@ class MITMCertManager:
 
     def _create_ca(self):
         os.makedirs(CA_DIR, exist_ok=True)
-
-        self._ca_key = rsa.generate_private_key(
-            public_exponent=65537, key_size=2048
-        )
+        self._ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = issuer = x509.Name([
             x509.NameAttribute(NameOID.COMMON_NAME, PROJECT_CERT_NAME),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, PROJECT_NAME),
@@ -90,81 +85,53 @@ class MITMCertManager:
             .serial_number(x509.random_serial_number())
             .not_valid_before(now)
             .not_valid_after(now + datetime.timedelta(days=3650))
-            .add_extension(
-                x509.BasicConstraints(ca=True, path_length=0), critical=True
-            )
-            .add_extension(
-                x509.KeyUsage(
-                    digital_signature=True,
-                    key_cert_sign=True,
-                    crl_sign=True,
-                    content_commitment=False,
-                    key_encipherment=False,
-                    data_encipherment=False,
-                    key_agreement=False,
-                    encipher_only=False,
-                    decipher_only=False,
-                ),
-                critical=True,
-            )
+            .add_extension(x509.BasicConstraints(ca=True, path_length=0), critical=True)
+            .add_extension(x509.KeyUsage(
+                digital_signature=True, key_cert_sign=True, crl_sign=True,
+                content_commitment=False, key_encipherment=False, data_encipherment=False,
+                key_agreement=False, encipher_only=False, decipher_only=False,
+            ), critical=True)
             .sign(self._ca_key, hashes.SHA256())
         )
-
         with open(CA_KEY_FILE, "wb") as f:
-            f.write(
-                self._ca_key.private_bytes(
-                    serialization.Encoding.PEM,
-                    serialization.PrivateFormat.TraditionalOpenSSL,
-                    serialization.NoEncryption(),
-                )
-            )
-        # Restrict the CA private key to the current user on POSIX.
-        # os.chmod is a no-op for permission bits on Windows.
+            f.write(self._ca_key.private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
+                serialization.NoEncryption(),
+            ))
         if os.name == "posix":
             with contextlib.suppress(OSError):
                 os.chmod(CA_KEY_FILE, 0o600)
         with open(CA_CERT_FILE, "wb") as f:
             f.write(self._ca_cert.public_bytes(serialization.Encoding.PEM))
-
         log.warning("Generated new CA certificate: %s", CA_CERT_FILE)
         log.warning(">>> Install this file in your browser's Trusted Root CAs! <<<")
 
     def get_server_context(self, domain: str) -> ssl.SSLContext:
         if domain not in self._ctx_cache:
             key_pem, cert_pem = self._generate_domain_cert(domain)
-
             safe = _safe_domain_filename(domain)
             cert_file = os.path.join(self._cert_dir, f"{safe}.crt")
             key_file = os.path.join(self._cert_dir, f"{safe}.key")
-
             ca_pem = self._ca_cert.public_bytes(serialization.Encoding.PEM)
             with open(cert_file, "wb") as f:
                 f.write(cert_pem + ca_pem)
             with open(key_file, "wb") as f:
                 f.write(key_pem)
-
             ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
             ctx.set_alpn_protocols(["http/1.1"])
             ctx.load_cert_chain(cert_file, key_file)
             self._ctx_cache[domain] = ctx
-
         return self._ctx_cache[domain]
 
     def _generate_domain_cert(self, domain: str):
-        key = rsa.generate_private_key(
-            public_exponent=65537, key_size=2048
-        )
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
         subject = x509.Name([
             x509.NameAttribute(NameOID.COMMON_NAME, domain[:64] or "unknown"),
         ])
-
-        # SAN: IP literal vs DNS name — x509.DNSName rejects IPv6 literals.
-        import ipaddress as _ipaddress
         try:
-            san_entry = x509.IPAddress(_ipaddress.ip_address(domain))
+            san_entry = x509.IPAddress(__import__('ipaddress').ip_address(domain))
         except ValueError:
             san_entry = x509.DNSName(domain)
-
         now = datetime.datetime.now(datetime.UTC)
         cert = (
             x509.CertificateBuilder()
@@ -174,16 +141,11 @@ class MITMCertManager:
             .serial_number(x509.random_serial_number())
             .not_valid_before(now)
             .not_valid_after(now + datetime.timedelta(days=365))
-            .add_extension(
-                x509.SubjectAlternativeName([san_entry]),
-                critical=False,
-            )
+            .add_extension(x509.SubjectAlternativeName([san_entry]), critical=False)
             .sign(self._ca_key, hashes.SHA256())
         )
-
         key_pem = key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.TraditionalOpenSSL,
+            serialization.Encoding.PEM, serialization.PrivateFormat.TraditionalOpenSSL,
             serialization.NoEncryption(),
         )
         cert_pem = cert.public_bytes(serialization.Encoding.PEM)

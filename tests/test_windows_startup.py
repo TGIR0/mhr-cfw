@@ -32,6 +32,7 @@ def _base_config(port: int, socks_port: int) -> dict:
         "allow_direct_udp": False,
         "udp_mode": "disabled",
         "quic_mode": "block",
+        "iran_geoip_enabled": False,
         "kcp_enabled": True,
         "relay_concurrency": 2,
         "pool_max": 2,
@@ -83,6 +84,34 @@ def test_main_check_config_accepts_valid_windows_config(tmp_path):
 
     assert result.returncode == 0
     assert result.stdout.strip() == "Config validation passed."
+    assert result.stderr == ""
+
+
+def test_main_routing_check_prints_only_decision(tmp_path):
+    repo = Path(__file__).resolve().parents[1]
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(_base_config(_free_port(), _free_port())),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "main.py",
+            "--config",
+            str(config_path),
+            "--routing-check",
+            "example.ir",
+        ],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "IR_DIRECT"
     assert result.stderr == ""
 
 

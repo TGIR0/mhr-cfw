@@ -11,6 +11,16 @@
 
 ## معماری فعلی
 
+مسیریابی هوشمند سهمیه Google را فقط برای ترافیکی مصرف می کند که واقعاً به relay
+نیاز دارد:
+
+```text
+دامنه/IP ایران             -> اینترنت مستقیم محلی
+دامنه های Google مجاز      -> مسیر مستقیم fronted
+HTTP(S) خارجی              -> Google Apps Script -> Cloudflare Worker
+UDP/QUIC/TCP خام/WebSocket -> fail-closed تا برنامه به TCP/HTTPS برگردد
+```
+
 ```text
 مرورگر یا برنامه
   -> پروکسی محلی HTTP یا SOCKS5
@@ -36,11 +46,8 @@ Cloudflare Worker -> Upstream Forwarder روی VPS -> سایت مقصد
 - MITM محلی برای ترافیک HTTPS مرورگر.
 - رله Google Apps Script با `UrlFetchApp.fetch()` و `fetchAll()`.
 - خروجی Cloudflare Worker با امکان Forwarder روی VPS برای IP پایدار.
-- رله مستقیم اختیاری به Cloudflare Worker. وقتی hostname خود Worker قابل
-  دسترس باشد، پروکسی محلی payloadهای HTTP را مستقیم به Worker می فرستد و
-  Apps Script فقط fallback می ماند؛ در نتیجه مصرف سهمیه Google کم می شود.
-- carrier اختیاری Worker WebSocket برای streamهای TCP خام؛ پیش فرض خاموش است و
-  از مسیر Apps Script جداست.
+- `RoutingPolicy` مرکزی: دامنه های `.ir` و GeoIP ایران مستقیم می روند، Google
+  مجاز از مسیر fronted direct می رود، و HTTP(S) خارجی از relay عبور می کند.
 - HTTP/2 بین کلاینت محلی و گوگل، اگر بسته `h2` نصب باشد و ALPN اجازه بدهد.
 - دانلود موازی فایل های بزرگ با Range request.
 - policy بسته برای raw TCP، UDP و QUIC پشتیبانی نشده تا ترافیک به شکل پنهانی
@@ -59,8 +66,9 @@ Cloudflare Worker -> Upstream Forwarder روی VPS -> سایت مقصد
 - بنابراین UDP و QUIC باید به صورت فاز جدا با encapsulation یا forwarder
   خودمیزبان طراحی شوند. نباید آن را «پشتیبانی مستقیم UDP/QUIC توسط Apps Script»
   معرفی کرد.
-- مقدارهای `allow_direct_tcp` و `allow_direct_udp` پیش فرض `false` دارند. روشن
-  کردن آن ها یعنی اولویت دادن به سازگاری به جای مقاومت در برابر نشتی.
+- مقدارهای `allow_direct_tcp`، `allow_direct_udp`، `tcp_relay_mode=worker_websocket`
+  و `direct_worker_enabled` در سیاست فعلی google-relay-only نادیده گرفته می شوند؛
+  ترافیک پشتیبانی نشده fail-closed می ماند.
 
 منابع رسمی:
 
@@ -98,13 +106,11 @@ pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --tr
 
 1. در Cloudflare یک Worker بسازید و محتوای `deploy/cloudflare-worker/worker.js` را قرار دهید.
 2. مقدار `WORKER_URL` در فایل Worker را با دامنه Worker خودتان عوض کنید.
-3. اگر رله مستقیم Worker را فعال می کنید، secret به نام `WORKER_AUTH_KEY` را
-   در Worker بگذارید و همان مقدار را در `worker_auth_key` محلی تنظیم کنید.
-4. در Google Apps Script یک Web app بسازید و محتوای `deploy/gas/Code.gs` را قرار دهید.
-5. در `Code.gs` مقدارهای `AUTH_KEY` و `WORKER_URL` را تنظیم کنید. اگر
+3. در Google Apps Script یک Web app بسازید و محتوای `deploy/gas/Code.gs` را قرار دهید.
+4. در `Code.gs` مقدارهای `AUTH_KEY` و `WORKER_URL` را تنظیم کنید. اگر
    `WORKER_AUTH_KEY` در Worker فعال است، همان مقدار را در `Code.gs` هم بگذارید.
-6. Apps Script را به صورت Web app با دسترسی `Anyone` deploy کنید.
-7. Deployment ID را برای فایل تنظیمات نگه دارید.
+5. Apps Script را به صورت Web app با دسترسی `Anyone` deploy کنید.
+6. Deployment ID را برای فایل تنظیمات نگه دارید.
 
 ## تنظیمات
 
@@ -135,25 +141,26 @@ cp config.example.json config.json
 python main.py --check-config
 ```
 
+بررسی تصمیم مسیریابی بدون اجرای proxy:
+
+```bash
+python main.py --routing-check example.ir
+```
+
 تنظیمات مهم transport و سرعت:
 
-- `direct_worker_enabled`: وقتی `true` باشد، payloadهای HTTP اول به
-  `worker_url` مستقیم می روند و فقط بعد از failure/circuit-breaker به Apps
-  Script برمی گردند. این کم مصرف ترین مسیر از نظر سهمیه Google است، اما فقط
-  وقتی کار می کند که hostname Worker از شبکه کاربر قابل دسترس باشد.
-- `worker_url` و `worker_auth_key`: endpoint HTTPS و secret مشترک برای رله
-  مستقیم Worker. secret سمت Worker با نام `WORKER_AUTH_KEY` باید همین مقدار باشد.
-- `direct_worker_concurrency`، `direct_worker_pool_max`،
-  `direct_worker_conn_ttl`: تنظیمات pool مستقیم Worker برای کاهش handshake TLS
-  و latency.
+- `routing_mode`: مقدار `compat_smart` تصمیم های کم مصرف مسیر را فعال می کند.
+- `iran_direct_enabled`، `iran_domain_suffixes`، `iran_geoip_enabled`،
+  `iran_geoip_db`: مقصدهای ایران را قبل از مصرف سهمیه relay مستقیم می فرستند.
+- `google_fronted_direct_enabled`: Googleهای مجاز را روی مسیر مستقیم fronted نگه
+  می دارد.
+- `relay_foreign_enabled`: HTTP(S) خارجی را روی مسیر Apps Script -> Worker نگه
+  می دارد.
+- `websocket_mode`: مقدار `http_only`؛ upgradeهایی که روی Apps Script قابل حمل
+  نیستند fail-closed می شوند.
 - `privacy_log_mode`: پیش فرض `host` است تا path و query string در لاگ محلی
   نیاید. برای debug محلی `full` و برای کمترین لاگ `off` استفاده کنید.
-- `tcp_relay_mode`: پیش فرض `http_only` است. فقط وقتی Worker endpoint مسیر
-  `/tcp` را deploy کردید و `worker_ws_url` را تنظیم کردید، مقدار
-  `worker_websocket` بدهید.
-- `worker_ws_url`: endpoint به شکل `wss://.../tcp` برای TCP-over-Worker-WebSocket.
-  این مسیر سهمیه Apps Script را مصرف نمی کند، اما مستقیم به Cloudflare Worker
-  وصل می شود و فقط وقتی کار می کند که hostname خود Worker قابل دسترس باشد.
+- `tcp_relay_mode`: مقدار `http_only` را نگه دارید؛ TCP خام در این فاز بسته است.
 - `udp_mode`: فعلاً `disabled`؛ مقدارهای آینده باید از carrier کپسوله شده استفاده کنند.
 - `quic_mode`: پیش فرض `block` برای جلوگیری از نشتی UDP/QUIC.
 - `kcp_enabled`، `kcp_mtu`، `kcp_window`، `kcp_resend_after`: تنظیمات reliability
@@ -202,21 +209,14 @@ challenge یا session را به IP وصل می کنند، می توانید
 | `UPSTREAM_FAIL_MODE` | Variable | `closed` یا `open` |
 | `UPSTREAM_TIMEOUT_MS` | Variable | `25000` |
 
-برای carrier اختیاری Worker WebSocket TCP، این secret را در Worker بگذارید و
-همان مقدار را در `worker_ws_auth_key` محلی تنظیم کنید، یا از `auth_key` محلی
-استفاده کنید:
-
-| نام | نوع | نمونه |
-| --- | --- | --- |
-| `WORKER_WS_AUTH_KEY` | Secret | رمز بلند تصادفی |
-
 ## کتابخانه های پایه
 
 - `cryptography`: ساخت CA و گواهی های MITM.
 - `h2`: انتقال HTTP/2 به سمت گوگل.
 - `certifi`: CA bundle پایدار برای container و Pythonهای embedded.
 - `brotli` و `zstandard`: decode کردن پاسخ های مدرن.
-- `websockets`: carrier اختیاری Worker WebSocket برای TCP.
+- `websockets`: برای آزمایش های future carrier نگه داشته شده، اما در سیاست
+  فعلی google-relay-only فعال نیست.
 - `aioquic`، `h11` و `anyio`: برای فازهای بعدی QUIC/HTTP، با اتکا به
   پیاده سازی های نگهداری شده به جای parser دستی.
 - `ikcp`: گزینه اختیاری برای carrier بومی KCP در نسخه های Python سازگار.

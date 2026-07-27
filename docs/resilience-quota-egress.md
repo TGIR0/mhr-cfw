@@ -44,12 +44,14 @@ reaching Cloudflare.
 
 | Mode | Google quota | Latency | Protocol coverage | Reliability role | Status |
 | --- | --- | --- | --- | --- | --- |
+| Iran direct route | None | Lowest | HTTP(S) to Iranian domains/IPs | Avoids relay quota for local traffic | Implemented |
+| Google fronted direct route | None | Low | Allowed Google HTTP(S) | Avoids relay for safe Google hosts | Implemented |
 | Apps Script HTTP relay | High: one or more URL Fetch calls per request | Highest | HTTP(S) only | Baseline fallback through Google fronting | Implemented |
 | Apps Script batch relay | Lower per burst | Medium/high | HTTP(S) only | Reduces request overhead under concurrency | Implemented |
 | Apps Script HTTP/2 to Google | Same quota, lower queueing | Lower when ALPN works | HTTP(S) relay control plane | Multiplexes local-to-Google requests | Implemented |
 | Parallel Range downloads | Higher request count for large files, higher throughput | Lower for large files | Large HTTP GET only | Fills bandwidth when quota budget permits | Implemented |
-| Worker WebSocket TCP | No Apps Script quota | Lower if Worker is reachable | TCP byte streams | Direct Cloudflare path and raw TCP carrier | Optional |
-| Worker HTTP direct | No Apps Script quota while healthy | Low | HTTP(S) only | Direct Worker data-plane with Apps Script fallback | Implemented |
+| Worker WebSocket TCP | No Apps Script quota | Lower if Worker is reachable | TCP byte streams | Direct Cloudflare path and raw TCP carrier | Out of scope for google-relay-only mode |
+| Worker HTTP direct | No Apps Script quota while healthy | Low | HTTP(S) only | Direct Worker data-plane with Apps Script fallback | Legacy code present, disabled |
 | Self-hosted forwarder | No Google quota after reaching Worker | Depends on VPS | HTTP(S), TCP, UDP if implemented there | Stable IP and protocol escape hatch | Partially implemented for HTTP |
 | KCP over WebSocket/HTTP | Depends on carrier | Medium | Encapsulated datagrams | Repairs packet loss/reordering over bad links | Scaffold only |
 | Native Rust QUIC/KCP forwarder | No Google quota after bootstrap | Lowest if reachable | TCP/UDP/QUIC tunnel | Long-term high-throughput carrier | Future |
@@ -63,7 +65,8 @@ Use these in this order so the relay repairs disruption without leaking traffic:
    Track per-route success rate, handshake time, first-byte latency, throughput,
    reset count, and quota errors. Candidate routes are:
 
-   - `worker_websocket_tcp`
+   - `ir_direct`
+   - `google_fronted_direct`
    - `apps_script_h2`
    - `apps_script_h1_pool`
    - `apps_script_batch`
@@ -116,52 +119,49 @@ not direct fallback to the normal network:
 - Increase concurrency gradually and measure p95/p99 latency, quota burn, and
   error rate. High concurrency can reduce latency until it hits Apps Script,
   Worker, origin, or local memory limits.
-- Do not send unsupported raw TCP/UDP directly unless the user explicitly turns
-  on `allow_direct_tcp` or `allow_direct_udp`; that trades leak resistance for
-  compatibility.
+- Do not send unsupported raw TCP/UDP directly in google-relay-only mode. The
+  current compatibility policy fails closed so applications can fall back to
+  TCP/HTTPS instead of leaking traffic or wasting quota.
 
 ## Google Quota Reduction Plan
 
-### Phase 0: keep current fallback safe
+### Phase 0: keep the Google relay safe
 
 Apps Script remains the reliable bootstrap path because Google fronting is the
 reachable entry point under current conditions.
 
-### Phase 1: direct Worker HTTP relay
+### Phase 1: smart routing before the relay
 
-When `direct_worker_enabled` is true, the local proxy sends HTTP relay payloads
-to `worker_url` first. Successful direct responses mark Worker healthy for a
-short TTL and reuse a keep-alive TLS pool. Timeouts, malformed responses, or
-non-200 Worker responses trip a circuit breaker for `direct_worker_fail_ttl` and
-the request falls back through Apps Script. If Worker is reachable, eligible
-traffic goes directly:
+The local proxy now decides the route before spending Apps Script quota:
 
 ```text
-client -> local proxy -> Worker HTTPS/WebSocket -> destination
+client -> local proxy -> Iranian destination directly
+client -> local proxy -> allowed Google/fronted destination directly
+client -> local proxy -> Google Apps Script -> Worker -> foreign destination
 ```
 
-This removes Apps Script quota from those flows. If Worker is not reachable,
-fall back to Apps Script:
+The public decision names are:
 
-```text
-client -> local proxy -> Google Apps Script -> Worker -> destination
-```
+- `IR_DIRECT`
+- `GOOGLE_FRONTED_DIRECT`
+- `RELAY_REQUIRED`
+- `FAIL_CLOSED_COMPAT`
 
-### Phase 2: low-cost reachability probe
+GeoIP is local CIDR based only. Missing `data/geoip/ir.cidr` is a warning unless
+`iran_geoip_required=true`.
 
-Add an explicit low-cost probe that tests whether `https://<worker>/` and
-`wss://<worker>/tcp` are reachable from the client network before real traffic
-arrives. The probe must use only a few attempts and cache the result with a TTL.
-If direct Worker is sometimes blocked but sometimes reachable, use Apps Script
-only as a control-plane/bootstrap route:
+### Phase 2: low-cost relay health probe
 
-- fetch current Worker endpoints, versions, and temporary route hints
+Add explicit low-cost probes for Apps Script deployment IDs and Google frontend
+IP/SNI choices before real traffic arrives. The probe must use only a few
+attempts and cache the result with a TTL:
+
 - record which front domains/IPs are working
-- avoid sending data payloads through Apps Script when a direct data-plane path
-  is healthy
+- mark slow or quota-limited script IDs unhealthy for a short TTL
+- keep Apps Script as the data-plane for foreign HTTP(S)
 
-Do not claim this is zero-quota. It is "near-zero quota" only when the data-plane
-stays direct and the control-plane probe frequency is low.
+Do not claim this is zero-quota. It is "lower quota" only when routing avoids
+the relay for Iran and allowed Google traffic.
 
 ### Phase 3: self-hosted clean forwarder
 
@@ -223,16 +223,15 @@ rate, ASN, RTT, and stability.
 
 ## Implementation Backlog
 
-- Add `worker_direct_probe` config and cached health checks for Worker HTTPS and
-  Worker WebSocket.
+- Add cached health checks for Apps Script deployments and Google fronting IPs.
 - Add route scoring with p50/p95/p99 latency, failure type, quota errors, and
   recent throughput.
 - Add per-host egress pinning and migration only on failure.
 - Add explicit Apps Script quota accounting in logs: estimated URL Fetch calls,
   batch size, Range chunk count, and daily burn estimate.
 - Add adaptive Range chunk sizing to balance throughput against quota burn.
-- Add Worker WebSocket TCP benchmark: handshake time, sustained throughput,
-  reconnect behavior, and challenge rate.
+- Keep Worker WebSocket TCP benchmarks as research only until the selected path
+  no longer requires google-relay-only behavior.
 - Add self-hosted forwarder TCP/UDP design before enabling UDP/QUIC.
 - Add egress allowlists and private-IP blocking to every raw TCP/UDP carrier.
 - Add Rust design notes for a future QUIC/KCP/TUN forwarder after Python

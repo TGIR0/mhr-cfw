@@ -186,7 +186,11 @@ def validate_config(config: dict) -> list[ConfigIssue]:
 
     tcp_mode = str(config.get("tcp_relay_mode", "http_only")).lower()
     if tcp_mode in _WORKER_WS_TCP_MODES:
-        _validate_worker_ws(config, issues)
+        issues.append(ConfigIssue(
+            WARNING,
+            "tcp_relay_mode",
+            "Worker WebSocket TCP is ignored in google-relay-only mode; raw TCP remains fail-closed.",
+        ))
     elif tcp_mode not in _SAFE_TCP_RELAY_MODES:
         issues.append(ConfigIssue(
             ERROR,
@@ -267,38 +271,11 @@ def _validate_worker_ws(config: dict, issues: list[ConfigIssue]) -> None:
 def _validate_direct_worker(config: dict, issues: list[ConfigIssue]) -> None:
     if not bool(config.get("direct_worker_enabled", False)):
         return
-
-    worker_url = _normalize_worker_url(
-        config.get("worker_url") or config.get("direct_worker_url") or "",
-        config.get("worker_ws_url") or "",
-    )
-    if not worker_url:
-        issues.append(ConfigIssue(
-            ERROR,
-            "worker_url",
-            "direct_worker_enabled requires an absolute https:// Worker URL "
-            "or a wss:// worker_ws_url to derive it from.",
-        ))
-
-    key = str(
-        config.get("worker_auth_key")
-        or config.get("worker_direct_auth_key")
-        or config.get("auth_key", "")
-    )
-    if key in _PLACEHOLDER_AUTH_KEYS:
-        issues.append(ConfigIssue(
-            ERROR,
-            "worker_auth_key",
-            "Direct Worker auth key is missing or still uses a placeholder.",
-        ))
-
-    if worker_url:
-        issues.append(ConfigIssue(
-            WARNING,
-            "direct_worker_enabled",
-            "Direct Worker bypasses Apps Script quota only while the Worker "
-            "hostname is reachable; Apps Script remains the fallback path.",
-        ))
+    issues.append(ConfigIssue(
+        WARNING,
+        "direct_worker_enabled",
+        "Direct Worker is ignored in google-relay-only mode; foreign traffic stays on Apps Script -> Worker.",
+    ))
 
 
 def _normalize_worker_url(worker_url: object, worker_ws_url: object) -> str:

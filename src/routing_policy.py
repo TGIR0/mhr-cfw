@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import ipaddress
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 IpNetwork = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 
-class RouteDecision(str, Enum):
+class RouteDecision(StrEnum):
     IR_DIRECT = "IR_DIRECT"
     GOOGLE_FRONTED_DIRECT = "GOOGLE_FRONTED_DIRECT"
     RELAY_REQUIRED = "RELAY_REQUIRED"
@@ -41,6 +41,7 @@ class RoutingPolicy:
     """Decide how a host/protocol should leave the proxy."""
 
     HTTP_PORTS = frozenset({80, 443})
+    _IRAN_DOMAIN_SUFFIX_CACHE: dict[str, bool] = {}
 
     def __init__(
         self,
@@ -139,14 +140,23 @@ class RoutingPolicy:
         h = _normalize_host(host)
         if not h:
             return False
-        if h in self.iran_domains:
-            return True
-        if any(h == suffix.lstrip(".") or h.endswith(suffix) for suffix in self.iran_domain_suffixes):
-            return True
-        ip = _parse_ip(h)
-        if ip is not None:
-            return any(ip in network for network in self.iran_networks)
-        return False
+
+        # Check cache first
+        cached = self._IRAN_DOMAIN_SUFFIX_CACHE.get(h)
+        if cached is not None:
+            return cached
+
+        if h in self.iran_domains or any(h == suffix.lstrip(".") or h.endswith(suffix) for suffix in self.iran_domain_suffixes):
+            result = True
+        else:
+            ip = _parse_ip(h)
+            if ip is not None:
+                result = any(ip in network for network in self.iran_networks)
+            else:
+                result = False
+
+        self._IRAN_DOMAIN_SUFFIX_CACHE[h] = result
+        return result
 
     def is_google_fronted_direct(self, host: str) -> bool:
         h = _normalize_host(host)

@@ -7,7 +7,29 @@ const WORKER_URL = "YOUR_WORKER_HOSTNAME.workers.dev";
 const DEFAULT_UPSTREAM_TIMEOUT_MS = 25000;
 const DEFAULT_TCP_CONNECT_TIMEOUT_MS = 10000;
 const WS_TCP_PATH = "/tcp";
+const WS_TCP_PATH = "/tcp";
 
+// ── Rate limiting ──────────────────────────────────────────────
+const RATE_WINDOW_MS = 60_000;   // 1 minute window
+const RATE_MAX = 300;            // max requests per window per key
+const _rateMap = new Map();
+
+function rateLimited(key) {
+    const now = Date.now();
+    let e = _rateMap.get(key);
+    if (!e || now > e.resetAt) {
+        e = { count: 0, resetAt: now + RATE_WINDOW_MS };
+        _rateMap.set(key, e);
+    }
+    if (++e.count > RATE_MAX) return true;
+    // Lazy cleanup to prevent unbounded memory growth
+    if (_rateMap.size > 10000) {
+        for (const [k, v] of _rateMap) {
+            if (now > v.resetAt) _rateMap.delete(k);
+        }
+    }
+    return false;
+}
 export default {
     async fetch(request, env) {
         try {
@@ -35,6 +57,10 @@ export default {
                 return json({ e: "unauthorized" }, 401);
             }
 
+            if (rateLimited(req.k || "anon")) {
+                return json({ e: "rate limited" }, 429);
+            }
+
             if (Array.isArray(req.q)) {
                 const results = await Promise.all(req.q.map(async item => {
                     try {
@@ -53,6 +79,14 @@ export default {
         }
     }
 };
+
+// Minimal gzip decompressor using Streams API (available in Cloudflare Workers)
+function decompressGzip(uint8) {
+    const ds = new DecompressionStream("gzip");
+    const chunk = new Blob([uint8]).stream();
+    const stream = chunk.pipeThrough(ds);
+    return new Response(stream).arrayBuffer();
+}
 
 async function relayHttp(req, env) {
     if (!req || !req.u) {
@@ -101,7 +135,14 @@ async function relayHttp(req, env) {
     };
 
     if (req.b) {
-        fetchOptions.body = Uint8Array.from(atob(req.b), c => c.charCodeAt(0));
+        let bodyBytes = Uint8Array.from(atob(req.b), c => c.charCodeAt(0));
+        // Decompress gzip-compressed body if signaled
+        if (req.ce === "gzip") {
+            try {
+                bodyBytes = decompressGzip(bodyBytes);
+            } catch (_) { /* fallback to raw */ }
+        }
+        fetchOptions.body = bodyBytes;
     }
 
     const resp = await fetch(targetUrl.toString(), fetchOptions);
@@ -265,7 +306,11 @@ function authorizedTcpHello(hello, env) {
 
 function authorizedHttpRelay(req, env) {
     const expected = env.WORKER_AUTH_KEY || "";
-    return !expected || (req && req.k === expected);
+    if (!expected) {
+        console.error("WORKER_AUTH_KEY is not set — rejecting all requests");
+        return false;  // fail-closed
+    }
+    return req && req.k === expected;
 }
 
 function validTcpTarget(host, port) {
@@ -334,11 +379,6 @@ async function waitForSocketOpened(socket, timeoutMs) {
     }
 }
 
-async function forwardViaUpstream(req, env, upstreamUrl) {
-    const result = await forwardViaUpstreamJson(req, env, upstreamUrl);
-    if (result === null) return null;
-    return json(result, result.e ? 502 : 200);
-}
 
 async function forwardViaUpstreamJson(req, env, upstreamUrl) {
     const failMode = (env.UPSTREAM_FAIL_MODE || "closed").toLowerCase();
