@@ -20,10 +20,31 @@
 "use strict";
 
 const http = require("http");
+const { gunzipSync } = require("zlib");
 
 const AUTH_KEY = process.env.AUTH_KEY || "";
 const PORT = parseInt(process.env.PORT, 10) || 8787;
 const HOST = process.env.HOST || "127.0.0.1";
+const MAX_RESPONSE_BYTES = 200 * 1024 * 1024;
+const RATE_WINDOW_MS = 60_000;
+const RATE_MAX = 300;
+const _rateMap = new Map();
+
+function rateLimited(key) {
+    const now = Date.now();
+    let e = _rateMap.get(key);
+    if (!e || now > e.resetAt) {
+        e = { count: 0, resetAt: now + RATE_WINDOW_MS };
+        _rateMap.set(key, e);
+    }
+    if (++e.count > RATE_MAX) return true;
+    if (_rateMap.size > 10000) {
+        for (const [k, v] of _rateMap) {
+            if (now > v.resetAt) _rateMap.delete(k);
+        }
+    }
+    return false;
+}
 
 if (!AUTH_KEY || AUTH_KEY.length < 32) {
     console.error("FATAL: AUTH_KEY env var missing or shorter than 32 chars.");
@@ -64,8 +85,12 @@ const server = http.createServer(async (req, res) => {
             sendJson(res, 401, { e: "unauthorized" });
             return;
         }
+        if (rateLimited(req.headers["x-upstream-auth"])) {
+            sendJson(res, 429, { e: "rate limited" });
+            return;
+        }
 
-        const raw = await readBody(req);
+        const raw = await readBody(req, res);
         let body;
         try {
             body = JSON.parse(raw);
@@ -99,7 +124,7 @@ const server = http.createServer(async (req, res) => {
         let buf = Buffer.from(body.b, "base64");
         if (body.ce === "gzip") {
             try {
-                buf = require("zlib").gunzipSync(buf);
+                buf = gunzipSync(buf);
             } catch (_) { /* fallback to raw */ }
         }
         fetchOptions.body = buf;
@@ -119,7 +144,6 @@ const server = http.createServer(async (req, res) => {
             return;
         }
 
-        const MAX_RESPONSE_BYTES = 200 * 1024 * 1024;
         const cl = parseInt(resp.headers.get("content-length") || "0", 10);
         if (cl > MAX_RESPONSE_BYTES) {
             sendJson(res, 502, { e: "response too large" });
@@ -149,28 +173,44 @@ server.listen(PORT, HOST, () => {
     console.log("upstream_forwarder listening on " + HOST + ":" + PORT);
 });
 
-const MAX_BODY_BYTES = 100 * 1024 * 1024; // 100 MB
+process.on("SIGTERM", () => {
+    console.log("SIGTERM received, shutting down");
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(1), 5000);
+});
 
-function readBody(req) {
+const MAX_BODY_BYTES = 100 * 1024 * 1024;
+
+function readBody(req, res) {
     return new Promise((resolve, reject) => {
         const chunks = [];
         let size = 0;
+        let rejected = false;
         req.on("data", c => {
+            if (rejected) return;
             size += c.length;
             if (size > MAX_BODY_BYTES) {
+                rejected = true;
+                sendJson(res, 413, { e: "body too large" });
                 req.destroy();
                 reject(new Error("body too large"));
                 return;
             }
             chunks.push(c);
         });
-        req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        req.on("end", () => {
+            if (!rejected) resolve(Buffer.concat(chunks).toString("utf8"));
+        });
         req.on("error", reject);
     });
 }
 
 function sendJson(res, status, obj) {
-    const body = JSON.stringify(obj);
-    res.writeHead(status, { "content-type": "application/json" });
-    res.end(body);
+    const payload = JSON.stringify(obj);
+    res.writeHead(status, {
+        "content-type": "application/json",
+        "content-length": Buffer.byteLength(payload),
+        "cache-control": "no-store"
+    });
+    res.end(payload);
 }

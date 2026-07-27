@@ -150,7 +150,12 @@ async function relayHttp(req, env) {
     if (contentLength > MAX_RESPONSE_BYTES) {
         return { e: "response too large: " + contentLength + " bytes" };
     }
-    const buffer = await resp.arrayBuffer();
+    let buffer;
+    try {
+        buffer = await resp.arrayBuffer();
+    } catch (e) {
+        return { e: "response read failed: " + String(e && e.message || e) };
+    }
     if (buffer.byteLength > MAX_RESPONSE_BYTES) {
         return { e: "response too large after read: " + buffer.byteLength };
     }
@@ -261,7 +266,7 @@ async function tcpWebSocketSession(ws, env) {
                 writer = socket.writable.getWriter();
                 opened = true;
                 ws.send(JSON.stringify({ ok: true }));
-                pipeTcpToWebSocket(socket, ws);
+                pipeTcpToWebSocket(socket, ws, resetIdle);
                 return;
             }
 
@@ -297,13 +302,16 @@ async function tcpWebSocketSession(ws, env) {
     });
 }
 
-async function pipeTcpToWebSocket(socket, ws) {
+async function pipeTcpToWebSocket(socket, ws, resetIdle) {
     const reader = socket.readable.getReader();
     try {
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
-            if (value && value.byteLength) ws.send(value);
+            if (value && value.byteLength) {
+                resetIdle();
+                ws.send(value);
+            }
         }
         ws.send(JSON.stringify({ op: "close" }));
         ws.close(1000, "target closed");
@@ -359,8 +367,18 @@ function validTcpTarget(host, port) {
     const lowered = host.toLowerCase();
     if (lowered === WORKER_URL || lowered.endsWith("." + WORKER_URL)) return false;
     if (lowered === "localhost" || lowered.endsWith(".local") ||
-        lowered.endsWith(".internal") || lowered.startsWith("10.") ||
-        lowered.startsWith("192.168.") || lowered.startsWith("172.16.")) return false;
+        lowered.endsWith(".internal")) return false;
+    if (lowered.startsWith("10.") ||
+        lowered.startsWith("192.168.") ||
+        lowered.startsWith("127.") ||
+        lowered.startsWith("169.254.") ||
+        lowered === "0.0.0.0") return false;
+    if (lowered.startsWith("172.")) {
+        const second = parseInt(lowered.split(".")[1], 10);
+        if (second >= 16 && second <= 31) return false;
+    }
+    if (lowered === "::1" || lowered.startsWith("fc") ||
+        lowered.startsWith("fd") || lowered.startsWith("fe80")) return false;
     return true;
 }
 

@@ -2351,7 +2351,12 @@ class DomainFronter:
                     writer.close()
                 raise
 
-        result = self._parse_batch_body(resp_body, payloads)
+        try:
+            result = self._parse_batch_body(resp_body, payloads)
+        except Exception:
+            with contextlib.suppress(Exception):
+                writer.close()
+            raise
         await self._release(reader, writer, created)
         return result
 

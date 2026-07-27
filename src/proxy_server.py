@@ -1597,8 +1597,14 @@ class ProxyServer:
                     writer.write(response)
                     await writer.drain()
                     continue
-
-                if await self._maybe_stream_download(method, url, headers, body, writer):
+                try:
+                    if await self._maybe_stream_download(method, url, headers, body, writer):
+                        continue
+                except Exception as e:
+                    log.error("Stream download failed (%s): %s", self._log_url(url), e)
+                    response = self._compat_error_response(502, f"Stream failed: {e}")
+                    writer.write(response)
+                    await writer.drain()
                     continue
 
                 # Check local cache first (GET only)
@@ -1861,7 +1867,13 @@ class ProxyServer:
             await writer.drain()
             return
 
-        if await self._maybe_stream_download(method, log_target, headers, body, writer):
+        try:
+            if await self._maybe_stream_download(method, log_target, headers, body, writer):
+                return
+        except Exception as e:
+            log.error("Stream download failed (%s): %s", self._log_url(log_target), e)
+            writer.write(self._compat_error_response(502, f"Stream failed: {e}"))
+            await writer.drain()
             return
 
         # Cache check for GET
