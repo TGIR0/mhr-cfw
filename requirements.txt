@@ -1,27 +1,8 @@
-# Runtime dependencies for TG Domain Relay
-# Python 3.10+ is supported. Python 3.13 is the container baseline.
-
-# MITM interception certificate generation and trust-store checks.
-cryptography>=48.0.0,<49
-
-# HTTP/2 multiplexing to Google Apps Script.
+cryptography>=49.0.0,<50
 h2>=4.3.0,<5
-
-# CA bundle for TLS verification. Windows normally uses its system store,
-# but certifi remains useful for embedded/container Python builds.
-certifi>=2026.4.22
-
-# Response decoding for modern Content-Encoding values.
+certifi>=2026.7.0
 brotli>=1.2.0,<2
 zstandard>=0.25.0,<1
-
-# Worker WebSocket TCP carrier and planned transports. Kept explicit so
-# protocol work can use maintained, documented implementations instead of
-# handwritten parsers.
-websockets>=16.0,<17
-aioquic>=1.3.0,<2
+websockets>=17.0,<18
 h11>=0.16.0,<1
-anyio>=4.13.0,<5
-
-# Optional native KCP carrier candidate for later tunnel work.
-ikcp>=0.0.3,<0.1; python_version < "3.14"
+anyio>=4.14.0,<5

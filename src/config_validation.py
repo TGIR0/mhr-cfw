@@ -59,6 +59,8 @@ _ROUTING_MODES = {
 
 _WEBSOCKET_MODES = {
     "http_only",
+    "relay",
+    "block",
     "disabled",
 }
 
@@ -163,12 +165,7 @@ def validate_config(config: dict) -> list[ConfigIssue]:
             "udp_mode",
             "UDP carrier is not wired yet; SOCKS5 UDP remains fail-closed.",
         ))
-        if not bool(config.get("kcp_enabled", True)):
-            issues.append(ConfigIssue(
-                WARNING,
-                "kcp_enabled",
-                "UDP mode is enabled while KCP reliability is disabled.",
-            ))
+
 
     quic_mode = str(config.get("quic_mode", "block")).lower()
     if quic_mode not in _QUIC_MODES:
@@ -212,12 +209,12 @@ def _validate_routing(config: dict, issues: list[ConfigIssue]) -> None:
             "Unknown routing_mode. Use 'compat_smart'.",
         ))
 
-    websocket_mode = str(config.get("websocket_mode", "http_only")).lower()
+    websocket_mode = str(config.get("websocket_mode", "relay")).lower()
     if websocket_mode not in _WEBSOCKET_MODES:
         issues.append(ConfigIssue(
             ERROR,
             "websocket_mode",
-            "Unknown websocket_mode. Use 'http_only' or 'disabled'.",
+            f"Unknown websocket_mode. Use one of: {', '.join(sorted(_WEBSOCKET_MODES))}.",
         ))
 
     if bool(config.get("iran_geoip_enabled", True)):
@@ -241,33 +238,6 @@ def format_issues(issues: list[ConfigIssue]) -> str:
     return "\n".join(lines)
 
 
-def _validate_worker_ws(config: dict, issues: list[ConfigIssue]) -> None:
-    url = str(config.get("worker_ws_url", "")).strip()
-    if not url:
-        issues.append(ConfigIssue(
-            ERROR,
-            "worker_ws_url",
-            "worker_websocket mode requires a wss:// Worker WebSocket URL.",
-        ))
-        return
-
-    parsed = urlparse(url)
-    if parsed.scheme != "wss" or not parsed.netloc:
-        issues.append(ConfigIssue(
-            ERROR,
-            "worker_ws_url",
-            "Worker WebSocket URL must be absolute and use wss://.",
-        ))
-
-    ws_key = str(config.get("worker_ws_auth_key") or config.get("auth_key", ""))
-    if ws_key in _PLACEHOLDER_AUTH_KEYS:
-        issues.append(ConfigIssue(
-            ERROR,
-            "worker_ws_auth_key",
-            "Worker WebSocket auth key is missing or still uses a placeholder.",
-        ))
-
-
 def _validate_direct_worker(config: dict, issues: list[ConfigIssue]) -> None:
     if not bool(config.get("direct_worker_enabled", False)):
         return
@@ -276,20 +246,6 @@ def _validate_direct_worker(config: dict, issues: list[ConfigIssue]) -> None:
         "direct_worker_enabled",
         "Direct Worker is ignored in google-relay-only mode; foreign traffic stays on Apps Script -> Worker.",
     ))
-
-
-def _normalize_worker_url(worker_url: object, worker_ws_url: object) -> str:
-    raw = str(worker_url or "").strip()
-    if raw:
-        parsed = urlparse(raw)
-        if parsed.scheme == "https" and parsed.netloc:
-            return raw.rstrip("/")
-        return ""
-
-    parsed = urlparse(str(worker_ws_url or "").strip())
-    if parsed.scheme == "wss" and parsed.netloc:
-        return f"https://{parsed.netloc}"
-    return ""
 
 
 def _script_ids(config: dict) -> list[str]:

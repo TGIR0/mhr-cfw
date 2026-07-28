@@ -51,7 +51,7 @@ async def _probe_ip(
         ProbeResult with latency_ms (if successful) or error message.
     """
     async with semaphore:
-        start_time = time.time()
+        start_time = time.perf_counter()
         try:
             # Create SSL context that skips certificate verification
             ctx = ssl.create_default_context()
@@ -90,7 +90,7 @@ async def _probe_ip(
                 return ProbeResult(ip=ip, error=f"invalid response: {response_str[:30]!r}")
 
             # Success — return latency in milliseconds
-            elapsed_ms = int((time.time() - start_time) * 1000)
+            elapsed_ms = int((time.perf_counter() - start_time) * 1000)
             return ProbeResult(ip=ip, latency_ms=elapsed_ms)
 
         except TimeoutError:

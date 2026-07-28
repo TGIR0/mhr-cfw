@@ -202,9 +202,8 @@ STATIC_EXTS: tuple[str, ...] = (
     ".css", ".js", ".mjs", ".woff", ".woff2", ".ttf", ".eot",
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico",
     ".mp3", ".mp4", ".webm", ".wasm", ".avif",
-    ".otf", ".cur", ".eot", ".bmp", ".tiff", ".tif",
+    ".otf", ".cur", ".bmp", ".tiff", ".tif",
     ".xml", ".rss", ".atom",
-    ".json",
 )
 LARGE_FILE_EXTS = frozenset({
     ".bin",
@@ -217,13 +216,6 @@ LARGE_FILE_EXTS = frozenset({
     ".wasm",
 })
 
-
-# ── Stateful-request hints ────────────────────────────────────────────────
-STATEFUL_HEADER_NAMES: tuple[str, ...] = (
-    "cookie", "authorization", "proxy-authorization",
-    "origin", "referer", "if-none-match", "if-modified-since",
-    "cache-control", "pragma",
-)
 UNCACHEABLE_HEADER_NAMES: tuple[str, ...] = (
     "cookie", "authorization", "proxy-authorization", "range",
     "if-none-match", "if-modified-since", "cache-control", "pragma",

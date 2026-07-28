@@ -42,6 +42,7 @@ class RoutingPolicy:
 
     HTTP_PORTS = frozenset({80, 443})
     _IRAN_DOMAIN_SUFFIX_CACHE: dict[str, bool] = {}
+    _IRAN_CACHE_MAX = 8192
 
     def __init__(
         self,
@@ -64,7 +65,7 @@ class RoutingPolicy:
         )
         self.relay_foreign_enabled = bool(config.get("relay_foreign_enabled", True))
         self.compat_block_udp_quic = bool(config.get("compat_block_udp_quic", True))
-        self.websocket_mode = str(config.get("websocket_mode", "http_only")).lower()
+        self.websocket_mode = str(config.get("websocket_mode", "relay")).lower()
         self.iran_domain_suffixes = _normalize_suffixes(
             config.get("iran_domain_suffixes", [".ir"])
         )
@@ -107,12 +108,11 @@ class RoutingPolicy:
                 )
             return RouteResult(RouteDecision.FAIL_CLOSED_COMPAT, "udp carrier unavailable")
 
-        if is_websocket and self.websocket_mode == "http_only":
+        if is_websocket and self.websocket_mode == "block":
             return RouteResult(
                 RouteDecision.FAIL_CLOSED_COMPAT,
-                "websocket over Apps Script relay is unsupported",
+                "websocket blocked by config",
             )
-
         if port not in self.HTTP_PORTS:
             return RouteResult(
                 RouteDecision.FAIL_CLOSED_COMPAT,
@@ -155,6 +155,8 @@ class RoutingPolicy:
             else:
                 result = False
 
+        if len(self._IRAN_DOMAIN_SUFFIX_CACHE) > self._IRAN_CACHE_MAX:
+            self._IRAN_DOMAIN_SUFFIX_CACHE.clear()
         self._IRAN_DOMAIN_SUFFIX_CACHE[h] = result
         return result
 
@@ -230,7 +232,7 @@ def load_geoip_networks(path: str) -> GeoIpLoadResult:
             try:
                 networks.append(ipaddress.ip_network(item, strict=False))
             except ValueError:
-                return GeoIpLoadResult((), f"Invalid CIDR at {path}:{lineno}")
+                continue
     except OSError as exc:
         return GeoIpLoadResult((), f"Could not read GeoIP CIDR file: {exc}")
     return GeoIpLoadResult(tuple(networks))

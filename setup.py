@@ -56,7 +56,11 @@ def prompt(question: str, default: str | None = None) -> str:
 def prompt_yes_no(question: str, default: bool = True) -> bool:
     hint = "Y/n" if default else "y/N"
     while True:
-        raw = input(f"{cyan('?')} {question} [{hint}]: ").strip().lower()
+        try:
+            raw = input(f"{cyan('?')} {question} [{hint}]: ").strip().lower()
+        except EOFError:
+            print()
+            sys.exit(1)
         if not raw:
             return default
         if raw in ("y", "yes"):

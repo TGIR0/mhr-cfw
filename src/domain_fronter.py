@@ -28,6 +28,7 @@ except Exception:  # optional dependency fallback
     certifi = None
 
 import contextlib
+import http as _http
 
 import codec
 from constants import (
@@ -50,6 +51,10 @@ from constants import (
 )
 
 log = logging.getLogger("Fronter")
+
+_STATUS_CODE_RE = re.compile(r"\d{3}")
+_JSON_EXTRACT_RE = re.compile(r"\{.*\}", re.DOTALL)
+_SET_COOKIE_SPLIT_RE = re.compile(r",\s*(?=[A-Za-z0-9!#$%&'*+\-.^_`|~]+=)")
 
 
 @dataclass
@@ -166,53 +171,6 @@ class DomainFronter:
         self._parallel_ranges_enabled = bool(
             config.get("parallel_range_enabled", True)
         )
-        direct_worker_requested = bool(config.get("direct_worker_enabled", False))
-        self._direct_worker_enabled = False
-        self._direct_worker_url = self._normalize_worker_url(
-            config.get("worker_url") or config.get("direct_worker_url") or "",
-            config.get("worker_ws_url") or "",
-        )
-        self._direct_worker_auth_key = str(
-            config.get("worker_auth_key")
-            or config.get("worker_direct_auth_key")
-            or config.get("auth_key", "")
-        )
-        self._direct_worker_timeout = self._cfg_float(
-            config, "direct_worker_timeout", 12.0, minimum=1.0,
-        )
-        self._direct_worker_fail_ttl = self._cfg_float(
-            config, "direct_worker_fail_ttl", 90.0, minimum=5.0,
-        )
-        self._direct_worker_ok_ttl = self._cfg_float(
-            config, "direct_worker_ok_ttl", 300.0, minimum=10.0,
-        )
-        direct_default_concurrency = self._cfg_int(
-            config, "relay_concurrency", SEMAPHORE_MAX, minimum=1,
-        )
-        self._direct_worker_concurrency = self._cfg_int(
-            config,
-            "direct_worker_concurrency",
-            direct_default_concurrency,
-            minimum=1,
-        )
-        self._direct_worker_pool_max = self._cfg_int(
-            config,
-            "direct_worker_pool_max",
-            min(20, self._direct_worker_concurrency),
-            minimum=1,
-        )
-        self._direct_worker_conn_ttl = self._cfg_float(
-            config, "direct_worker_conn_ttl", 45.0, minimum=5.0,
-        )
-        self._direct_worker_semaphore = asyncio.Semaphore(
-            self._direct_worker_concurrency
-        )
-        self._direct_worker_pool: list[
-            tuple[asyncio.StreamReader, asyncio.StreamWriter, float]
-        ] = []
-        self._direct_worker_pool_lock = asyncio.Lock()
-        self._direct_worker_fail_until = 0.0
-        self._direct_worker_ok_until = 0.0
 
         self._forwarder_hosts = self._load_host_rules(
             config.get("forwarder_hosts", [])
@@ -277,18 +235,6 @@ class DomainFronter:
         if self._parallel_relay > 1:
             log.info("Fan-out relay: %d parallel Apps Script instances per request",
                      self._parallel_relay)
-        if direct_worker_requested:
-            log.warning(
-                "direct_worker_enabled is ignored: google-relay-only routing keeps "
-                "foreign traffic on Apps Script -> Worker."
-            )
-        if self._direct_worker_enabled and self._direct_worker_url:
-            log.info(
-                "Direct Worker HTTP relay enabled: Apps Script is fallback-only "
-                "(pool=%d concurrency=%d)",
-                self._direct_worker_pool_max,
-                self._direct_worker_concurrency,
-            )
         log.info(
             "Relay tuning: pool=%d min_idle=%d batch=%s/%d range=%s",
             self._pool_max,
@@ -343,20 +289,6 @@ class DomainFronter:
         if h in exact:
             return True
         return any(h.endswith(s) for s in suffixes)
-
-    @staticmethod
-    def _normalize_worker_url(worker_url: str, worker_ws_url: str) -> str:
-        raw = str(worker_url or "").strip()
-        if raw:
-            parsed = urlparse(raw)
-            if parsed.scheme == "https" and parsed.netloc:
-                return raw.rstrip("/")
-            return ""
-
-        parsed = urlparse(str(worker_ws_url or "").strip())
-        if parsed.scheme == "wss" and parsed.netloc:
-            return f"https://{parsed.netloc}"
-        return ""
 
     def _ssl_ctx(self) -> ssl.SSLContext:
         ctx = ssl.create_default_context()
@@ -694,12 +626,6 @@ class DomainFronter:
 
     async def _relay_payload_h1(self, payload: dict) -> bytes:
         attempts = self._retry_attempts_for_payload(payload)
-        if self._direct_worker_preferred():
-            try:
-                return await self._relay_worker_direct(payload)
-            except Exception as exc:
-                self._mark_direct_worker_failed(str(exc))
-                log.debug("Direct Worker relay failed, falling back to Apps Script: %s", exc)
         async with self._semaphore:
             for attempt in range(attempts):
                 try:
@@ -746,148 +672,6 @@ class DomainFronter:
                 await asyncio.sleep(0.3 * (attempt + 1))
         return last_raw
 
-    def _direct_worker_preferred(self) -> bool:
-        if not self._direct_worker_enabled or not self._direct_worker_url:
-            return False
-        now = time.time()
-        return self._direct_worker_ok_until > now or self._direct_worker_fail_until <= now
-
-    def _mark_direct_worker_ok(self) -> None:
-        self._direct_worker_ok_until = time.time() + self._direct_worker_ok_ttl
-        self._direct_worker_fail_until = 0.0
-
-    def _mark_direct_worker_failed(self, reason: str) -> None:
-        self._direct_worker_ok_until = 0.0
-        self._direct_worker_fail_until = time.time() + self._direct_worker_fail_ttl
-        log.debug(
-            "Direct Worker disabled for %.0fs after failure: %s",
-            self._direct_worker_fail_ttl,
-            reason,
-        )
-
-    async def _open_direct_worker(self):
-        parsed = urlparse(self._direct_worker_url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise RuntimeError("direct Worker URL must be https://")
-        reader, writer = await asyncio.wait_for(
-            asyncio.open_connection(
-                parsed.hostname,
-                parsed.port or 443,
-                ssl=self._ssl_ctx(),
-                server_hostname=parsed.hostname,
-            ),
-            timeout=self._direct_worker_timeout,
-        )
-        return reader, writer
-
-    async def _acquire_direct_worker(self):
-        now = asyncio.get_running_loop().time()
-        async with self._direct_worker_pool_lock:
-            while self._direct_worker_pool:
-                reader, writer, created = self._direct_worker_pool.pop()
-                if (now - created) < self._direct_worker_conn_ttl and not reader.at_eof():
-                    return reader, writer, created
-                with contextlib.suppress(Exception):
-                    writer.close()
-
-        reader, writer = await self._open_direct_worker()
-        return reader, writer, asyncio.get_running_loop().time()
-
-    async def _release_direct_worker(self, reader, writer, created) -> None:
-        now = asyncio.get_running_loop().time()
-        if (now - created) >= self._direct_worker_conn_ttl or reader.at_eof():
-            with contextlib.suppress(Exception):
-                writer.close()
-            return
-
-        async with self._direct_worker_pool_lock:
-            if len(self._direct_worker_pool) < self._direct_worker_pool_max:
-                self._direct_worker_pool.append((reader, writer, created))
-            else:
-                with contextlib.suppress(Exception):
-                    writer.close()
-
-    async def _flush_direct_worker_pool(self) -> None:
-        async with self._direct_worker_pool_lock:
-            pool, self._direct_worker_pool = self._direct_worker_pool, []
-        for _reader, writer, _created in pool:
-            with contextlib.suppress(Exception):
-                writer.close()
-
-    def _direct_worker_request_parts(self) -> tuple[str, str]:
-        parsed = urlparse(self._direct_worker_url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise RuntimeError("direct Worker URL must be https://")
-        path = parsed.path or "/"
-        if parsed.query:
-            path += f"?{parsed.query}"
-        host_header = parsed.hostname
-        if parsed.port:
-            host_header = f"{host_header}:{parsed.port}"
-        return path, host_header
-
-    async def _send_worker_direct_payload(self, payload: dict) -> bytes:
-        json_body = json.dumps(payload).encode()
-        path, host_header = self._direct_worker_request_parts()
-        retryable = (OSError, ConnectionError, TimeoutError, asyncio.IncompleteReadError)
-        last_exc: BaseException | None = None
-        for attempt in range(2):
-            reader = writer = None
-            try:
-                async with self._direct_worker_semaphore:
-                    reader, writer, created = await self._acquire_direct_worker()
-                    request = (
-                        f"POST {path} HTTP/1.1\r\n"
-                        f"Host: {host_header}\r\n"
-                        f"Content-Type: application/json\r\n"
-                        f"Content-Length: {len(json_body)}\r\n"
-                        f"Accept-Encoding: gzip\r\n"
-                        f"Connection: keep-alive\r\n"
-                        f"\r\n"
-                    )
-                    writer.write(request.encode() + json_body)
-                    await writer.drain()
-                    async with asyncio.timeout(self._direct_worker_timeout):
-                        status, _headers, resp_body = await self._read_http_response(reader)
-                    if status == 0:
-                        raise ConnectionError("empty direct Worker response")
-                    if status != 200:
-                        raise _RelayBadResponse(f"direct Worker HTTP {status}")
-                    await self._release_direct_worker(reader, writer, created)
-                    reader = writer = None
-                    self._mark_direct_worker_ok()
-                    return resp_body
-            except retryable as exc:
-                last_exc = exc
-                if writer is not None:
-                    with contextlib.suppress(Exception):
-                        writer.close()
-                if attempt == 0:
-                    continue
-                raise
-            except Exception:
-                if writer is not None:
-                    with contextlib.suppress(Exception):
-                        writer.close()
-                raise
-        raise RuntimeError(f"direct Worker failed: {last_exc}")
-
-    async def _relay_worker_direct(self, payload: dict) -> bytes:
-        full_payload = dict(payload)
-        if self._direct_worker_auth_key:
-            full_payload["k"] = self._direct_worker_auth_key
-        resp_body = await self._send_worker_direct_payload(full_payload)
-        return self._parse_or_raise(resp_body)
-
-    async def _relay_batch_worker_direct(self, payloads: list[dict]) -> list[bytes]:
-        if not payloads:
-            return []
-        full_payload = {"q": payloads}
-        if self._direct_worker_auth_key:
-            full_payload["k"] = self._direct_worker_auth_key
-        resp_body = await self._send_worker_direct_payload(full_payload)
-        return self._parse_batch_body(resp_body, payloads)
-
     # ── Per-host stats ────────────────────────────────────────────
 
     def _record_site(self, url: str, bytes_: int, latency_ns: int,
@@ -929,12 +713,6 @@ class DomainFronter:
             "blacklisted_scripts": blacklisted,
             "sni_rotation": list(self._sni_hosts),
             "parallel_relay": self._parallel_relay,
-            "direct_worker": {
-                "enabled": self._direct_worker_enabled,
-                "pooled_connections": len(self._direct_worker_pool),
-                "healthy_for_s": int(max(0, self._direct_worker_ok_until - now)),
-                "retry_after_s": int(max(0, self._direct_worker_fail_until - now)),
-            },
         }
 
     async def _stats_logger(self):
@@ -1063,10 +841,6 @@ class DomainFronter:
         if self._warmed:
             return
         self._warmed = True
-        if self._direct_worker_preferred():
-            if self._stats_task is None:
-                self._stats_task = self._spawn(self._stats_logger())
-            return
         self._warm_task = self._spawn(self._do_warm())
         # Start continuous pool maintenance
         if self._maintenance_task is None:
@@ -1104,7 +878,6 @@ class DomainFronter:
         self._keepalive_task = None
 
         await self._flush_pool()
-        await self._flush_direct_worker_pool()
 
         if self._h2:
             try:
@@ -1288,17 +1061,6 @@ class DomainFronter:
         errored = False
         result: bytes = b""
         try:
-            if self._direct_worker_preferred():
-                try:
-                    result = await self._relay_worker_direct(payload)
-                    return result
-                except Exception as exc:
-                    self._mark_direct_worker_failed(str(exc))
-                    log.debug(
-                        "Direct Worker relay failed, falling back to Apps Script: %s",
-                        exc,
-                    )
-
             if not self._warmed:
                 await self._warm_pool()
 
@@ -1476,7 +1238,6 @@ class DomainFronter:
                 rh_base = dict(headers) if headers else {}
                 rh_base["Range"] = f"bytes={s}-{e}"
                 payload = self._build_payload("GET", url, rh_base, b"")
-                e - s + 1
                 last_err = None
                 for attempt in range(max_tries):
                     try:
@@ -1676,7 +1437,6 @@ class DomainFronter:
                 base_headers = dict(headers) if headers else {}
                 base_headers["Range"] = f"bytes={start_off}-{end_off}"
                 payload = self._build_payload("GET", url, base_headers, b"")
-                end_off - start_off + 1
                 last_err = "unknown"
                 try:
                     for attempt in range(max_tries):
@@ -1849,9 +1609,8 @@ class DomainFronter:
         # Encode body with gzip compression for payloads > 256 bytes
         if body:
             if len(body) > 256:
-                compressed = zlib.compress(body, 6)
+                compressed = zlib.compress(body, 6, wbits=zlib.MAX_WBITS | 16)
                 payload["b"] = base64.b64encode(compressed).decode("ascii")
-                # Signal to GAS that body is compressed (GS compresses before sending)
                 payload["ce"] = "gzip"
             else:
                 payload["b"] = base64.b64encode(body).decode("ascii")
@@ -1872,7 +1631,7 @@ class DomainFronter:
     @classmethod
     def _is_static_asset_url(cls, url: str) -> bool:
         path = urlparse(url).path.lower()
-        return any(path.endswith(ext) for ext in cls._STATIC_EXTS)
+        return path.endswith(cls._STATIC_EXTS)
 
     @staticmethod
     def _header_value(headers: dict | None, name: str) -> str:
@@ -2268,16 +2027,6 @@ class DomainFronter:
 
     async def _relay_batch(self, payloads: list[dict]) -> list[bytes]:
         """Send multiple requests in one POST using Apps Script fetchAll."""
-        if self._direct_worker_preferred():
-            try:
-                return await self._relay_batch_worker_direct(payloads)
-            except Exception as exc:
-                self._mark_direct_worker_failed(str(exc))
-                log.debug(
-                    "Direct Worker batch failed, falling back to Apps Script: %s",
-                    exc,
-                )
-
         batch_payload = {
             "k": self.auth_key,
             "q": payloads,
@@ -2393,15 +2142,22 @@ class DomainFronter:
 
     async def _read_http_response(self, reader: asyncio.StreamReader):
         """Read one HTTP response. Keep-alive safe (no read-until-EOF)."""
-        raw = b""
-        while b"\r\n\r\n" not in raw:
-            if len(raw) > 65536:  # 64 KB header size limit
+        raw_parts: list[bytes] = []
+        raw_len = 0
+        while True:
+            joined = b"".join(raw_parts)
+            if b"\r\n\r\n" in joined:
+                raw = joined
+                break
+            if raw_len > 65536:
                 return 0, {}, b""
             async with asyncio.timeout(8):
                 chunk = await reader.read(8192)
             if not chunk:
+                raw = joined
                 break
-            raw += chunk
+            raw_parts.append(chunk)
+            raw_len += len(chunk)
 
         if b"\r\n\r\n" not in raw:
             return 0, {}, b""
@@ -2410,7 +2166,7 @@ class DomainFronter:
         lines = header_section.split(b"\r\n")
 
         status_line = lines[0].decode(errors="replace")
-        m = re.search(r"\d{3}", status_line)
+        m = _STATUS_CODE_RE.search(lines[0].decode(errors="replace"))
         status = int(m.group()) if m else 0
 
         headers = {}
@@ -2472,7 +2228,8 @@ class DomainFronter:
 
     async def _read_chunked(self, reader, buf=b""):
         """Incrementally read chunked transfer-encoding."""
-        result = b""
+        result_parts: list[bytes] = []
+        result_len = 0
         max_body = self._max_response_body_bytes
         while True:
             while b"\r\n" not in buf:
@@ -2494,7 +2251,7 @@ class DomainFronter:
                 break
             if size == 0:
                 break
-            if size > max_body or len(result) + size > max_body:
+            if size > max_body or result_len + size > max_body:
                 raise RuntimeError(
                     "Chunked relay response exceeded configured size cap "
                     f"({max_body} bytes)"
@@ -2504,14 +2261,15 @@ class DomainFronter:
                 async with asyncio.timeout(20):
                     data = await reader.read(65536)
                 if not data:
-                    result += buf[:size]
-                    return result
+                    result_parts.append(buf[:size])
+                    return b"".join(result_parts)
                 buf += data
 
-            result += buf[:size]
+            result_parts.append(buf[:size])
+            result_len += size
             buf = buf[size + 2:]
 
-        return result
+        return b"".join(result_parts)
 
     # ── Response parsing ──────────────────────────────────────────
 
@@ -2541,7 +2299,7 @@ class DomainFronter:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            m = re.search(r'\{.*\}', text, re.DOTALL)
+            m = _JSON_EXTRACT_RE.search(text)
             if m:
                 with contextlib.suppress(json.JSONDecodeError):
                     data = json.loads(m.group())
@@ -2581,7 +2339,6 @@ class DomainFronter:
                 "Increase max_response_body_bytes if your system has enough RAM.",
             )
 
-        import http as _http
         try:
             status_text = _http.HTTPStatus(status).phrase
         except ValueError:
@@ -2618,7 +2375,7 @@ class DomainFronter:
         """
         if not blob:
             return []
-        parts = re.split(r",\s*(?=[A-Za-z0-9!#$%&'*+\-.^_`|~]+=)", blob)
+        parts = _SET_COOKIE_SPLIT_RE.split(blob)
         return [p.strip() for p in parts if p.strip()]
 
     def _split_raw_response(self, raw: bytes):

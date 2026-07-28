@@ -36,12 +36,7 @@ class ProtocolPolicy:
         self._allow_direct_udp = bool(config.get("allow_direct_udp", False))
         self._udp_mode = str(config.get("udp_mode", "disabled")).lower()
         self._quic_mode = str(config.get("quic_mode", "block")).lower()
-        self._kcp_enabled = bool(config.get("kcp_enabled", True))
         self._tcp_relay_mode = str(config.get("tcp_relay_mode", "http_only")).lower()
-
-    @property
-    def kcp_enabled(self) -> bool:
-        return self._kcp_enabled
 
     @property
     def udp_mode(self) -> str:
@@ -55,22 +50,13 @@ class ProtocolPolicy:
     def tcp_relay_mode(self) -> str:
         return self._tcp_relay_mode
 
-    @property
-    def worker_websocket_tcp_enabled(self) -> bool:
-        return False
-
     def tcp_decision(self, host: str, port: int, *, bypassed: bool = False) -> ProtocolDecision:
         if bypassed:
             return ProtocolDecision(True, False, False, "host is explicitly bypassed")
         if port in TCP_HTTP_PORTS:
             return ProtocolDecision(False, True, False, "HTTP(S) relay supported")
         if self._allow_direct_tcp:
-            return ProtocolDecision(
-                False,
-                False,
-                True,
-                "direct raw TCP is disabled by compatibility policy",
-            )
+            return ProtocolDecision(True, False, False, "direct TCP allowed by config")
         return ProtocolDecision(False, False, True, "raw TCP relay is not implemented")
 
     def socks_command_decision(self, cmd: int) -> ProtocolDecision:
@@ -102,10 +88,5 @@ class ProtocolPolicy:
                 "UDP encapsulation is configured but not implemented yet",
             )
         if self._allow_direct_udp:
-            return ProtocolDecision(
-                False,
-                False,
-                True,
-                "direct UDP is disabled by compatibility policy",
-            )
+            return ProtocolDecision(True, False, False, "direct UDP allowed by config")
         return ProtocolDecision(False, False, True, "UDP disabled")

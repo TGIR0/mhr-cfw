@@ -40,14 +40,6 @@ def supported_encodings() -> str:
     return ", ".join(codecs)
 
 
-def has_brotli() -> bool:
-    return _HAS_BR
-
-
-def has_zstd() -> bool:
-    return _HAS_ZSTD
-
-
 def decode(body: bytes, encoding: str) -> bytes:
     """Decode *body* according to Content-Encoding.
 

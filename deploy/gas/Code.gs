@@ -7,6 +7,7 @@ const WORKER_AUTH_KEY = "";
 const SKIP_HEADERS = {
   host: 1, connection: 1, "content-length": 1,
   "transfer-encoding": 1, "proxy-connection": 1, "proxy-authorization": 1,
+  "accept-encoding": 1,
 };
 
 function doPost(e) {
@@ -29,18 +30,23 @@ function _doSingle(req) {
 
   var payload = _buildWorkerPayload(req);
 
-  var resp = UrlFetchApp.fetch(WORKER_URL, {
+  var fetchOpts = {
     method: "post",
     contentType: "application/json",
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
     followRedirects: true
-  });
+  };
+  if (WORKER_AUTH_KEY) {
+    fetchOpts.headers = { "Authorization": "Bearer " + WORKER_AUTH_KEY };
+  }
+  var resp = UrlFetchApp.fetch(WORKER_URL, fetchOpts);
 
+  var text = resp.getContentText();
   try {
-    return _json(JSON.parse(resp.getContentText()));
+    return _json(JSON.parse(text));
   } catch (e) {
-    return _json({ e: "invalid worker response", raw: resp.getContentText() });
+    return _json({ e: "invalid worker response", raw: text.substring(0, 500) });
   }
 }
 
@@ -58,17 +64,18 @@ function _doBatch(items) {
 
     var payload = _buildWorkerPayload(item);
 
-    fetchArgs.push({
-      _i: i,
-      _o: {
-        url: WORKER_URL,
-        method: "post",
-        contentType: "application/json",
-        payload: JSON.stringify(payload),
-        muteHttpExceptions: true,
-        followRedirects: true
-      }
-    });
+    var opts = {
+      url: WORKER_URL,
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+      followRedirects: true
+    };
+    if (WORKER_AUTH_KEY) {
+      opts.headers = { "Authorization": "Bearer " + WORKER_AUTH_KEY };
+    }
+    fetchArgs.push({ _i: i, _o: opts });
   }
 
   var responses = [];
@@ -84,10 +91,11 @@ function _doBatch(items) {
       results.push({ e: errorMap[i] });
     } else {
       var resp = responses[rIdx++];
+      var text = resp.getContentText();
       try {
-        results.push(JSON.parse(resp.getContentText()));
+        results.push(JSON.parse(text));
       } catch (e) {
-        results.push({ e: "invalid worker response", raw: resp.getContentText() });
+        results.push({ e: "invalid worker response", raw: text.substring(0, 500) });
       }
     }
   }

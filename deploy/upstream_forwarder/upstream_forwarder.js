@@ -137,25 +137,22 @@ const server = http.createServer(async (req, res) => {
     }
 
         let resp;
-        try {
         const controller = new AbortController();
         const fetchTimer = setTimeout(() => controller.abort(), 30_000);
         try {
             resp = await fetch(body.u, { ...fetchOptions, signal: controller.signal });
-        } finally {
-            clearTimeout(fetchTimer);
-        }
+            const cl = parseInt(resp.headers.get("content-length") || "0", 10);
+            if (cl > MAX_RESPONSE_BYTES) {
+                sendJson(res, 502, { e: "response too large" });
+                return;
+            }
+            var buf = Buffer.from(await resp.arrayBuffer());
         } catch (err) {
             sendJson(res, 502, { e: "fetch failed: " + String(err && err.message || err) });
             return;
+        } finally {
+            clearTimeout(fetchTimer);
         }
-
-        const cl = parseInt(resp.headers.get("content-length") || "0", 10);
-        if (cl > MAX_RESPONSE_BYTES) {
-            sendJson(res, 502, { e: "response too large" });
-            return;
-        }
-        const buf = Buffer.from(await resp.arrayBuffer());
         if (buf.byteLength > MAX_RESPONSE_BYTES) {
             sendJson(res, 502, { e: "response too large after read" });
             return;
@@ -174,6 +171,14 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 500, { e: String(err && err.message || err) });
     }
 });
+
+server.on("error", (err) => {
+    console.error("FATAL: server error: " + String(err && err.message || err));
+    process.exit(1);
+});
+
+server.keepAliveTimeout = 65_000;
+server.headersTimeout = 66_000;
 
 server.listen(PORT, HOST, () => {
     console.log("upstream_forwarder listening on " + HOST + ":" + PORT);

@@ -12,6 +12,7 @@ Requires: pip install cryptography
 
 import contextlib
 import datetime
+import ipaddress
 import logging
 import os
 import re
@@ -20,7 +21,7 @@ import tempfile
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from cryptography.x509.oid import NameOID
 
 try:
@@ -61,13 +62,16 @@ class MITMCertManager:
 
     def _ensure_ca(self):
         if os.path.exists(CA_KEY_FILE) and os.path.exists(CA_CERT_FILE):
-            with open(CA_KEY_FILE, "rb") as f:
-                self._ca_key = serialization.load_pem_private_key(f.read(), password=None)
-            with open(CA_CERT_FILE, "rb") as f:
-                self._ca_cert = x509.load_pem_x509_certificate(f.read())
-            log.info("Loaded CA from %s", CA_DIR)
-        else:
-            self._create_ca()
+            try:
+                with open(CA_KEY_FILE, "rb") as f:
+                    self._ca_key = serialization.load_pem_private_key(f.read(), password=None)
+                with open(CA_CERT_FILE, "rb") as f:
+                    self._ca_cert = x509.load_pem_x509_certificate(f.read())
+                log.info("Loaded CA from %s", CA_DIR)
+                return
+            except Exception as exc:
+                log.warning("Corrupt CA files, regenerating: %s", exc)
+        self._create_ca()
 
     def _create_ca(self):
         os.makedirs(CA_DIR, exist_ok=True)
@@ -106,8 +110,12 @@ class MITMCertManager:
         log.warning("Generated new CA certificate: %s", CA_CERT_FILE)
         log.warning(">>> Install this file in your browser's Trusted Root CAs! <<<")
 
+    _CTX_CACHE_MAX = 512
+
     def get_server_context(self, domain: str) -> ssl.SSLContext:
         if domain not in self._ctx_cache:
+            if len(self._ctx_cache) >= self._CTX_CACHE_MAX:
+                self._ctx_cache.clear()
             key_pem, cert_pem = self._generate_domain_cert(domain)
             safe = _safe_domain_filename(domain)
             cert_file = os.path.join(self._cert_dir, f"{safe}.crt")
@@ -124,12 +132,12 @@ class MITMCertManager:
         return self._ctx_cache[domain]
 
     def _generate_domain_cert(self, domain: str):
-        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        key = ec.generate_private_key(ec.SECP256R1())
         subject = x509.Name([
             x509.NameAttribute(NameOID.COMMON_NAME, domain[:64] or "unknown"),
         ])
         try:
-            san_entry = x509.IPAddress(__import__('ipaddress').ip_address(domain))
+            san_entry = x509.IPAddress(ipaddress.ip_address(domain))
         except ValueError:
             san_entry = x509.DNSName(domain)
         now = datetime.datetime.now(datetime.UTC)

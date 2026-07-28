@@ -21,7 +21,6 @@ import time
 RESET   = "\x1b[0m"
 BOLD    = "\x1b[1m"
 DIM     = "\x1b[2m"
-ITALIC  = "\x1b[3m"
 
 # 8-bit / truecolor friendly foreground codes
 FG_GRAY    = "\x1b[38;5;245m"

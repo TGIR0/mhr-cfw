@@ -98,11 +98,23 @@ class WorkerWebSocketTransport:
                     )
                     return False
 
-                await asyncio.gather(
-                    self._client_to_ws(reader, ws),
-                    self._ws_to_client(ws, writer),
-                    return_exceptions=True,
-                )
+                tasks = [
+                    asyncio.create_task(self._client_to_ws(reader, ws)),
+                    asyncio.create_task(self._ws_to_client(ws, writer)),
+                ]
+                try:
+                    _done, pending = await asyncio.wait(
+                        tasks, return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    for t in pending:
+                        t.cancel()
+                    if pending:
+                        await asyncio.gather(*pending, return_exceptions=True)
+                finally:
+                    for t in tasks:
+                        if not t.done():
+                            t.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
                 return True
         except asyncio.CancelledError:
             raise

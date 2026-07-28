@@ -27,6 +27,16 @@ if "%PY%"=="" (
     exit /b 1
 )
 
+REM -------- Check Python version (3.10+ required) --------
+for /f "tokens=2 delims= " %%V in ('%PY% -c "import sys; print(sys.version_info[:2])" 2^>nul') do set "PYVER=%%~V"
+%PY% -c "import sys; exit(0 if sys.version_info >= (3,10) else 1)" 2>nul
+if errorlevel 1 (
+    echo [X] Python 3.10+ is required. Found an older version.
+    echo     Install from https://www.python.org/downloads/ and re-run this script.
+    pause
+    exit /b 1
+)
+
 if not exist "%VENV_DIR%\Scripts\python.exe" (
     echo [*] Creating virtual environment in %VENV_DIR% ...
     %PY% -m venv "%VENV_DIR%"
