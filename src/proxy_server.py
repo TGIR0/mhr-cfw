@@ -50,6 +50,7 @@ from protocol_policy import (
     ProtocolPolicy,
 )
 from routing_policy import RouteDecision, RouteResult, RoutingPolicy
+from worker_ws_transport import WorkerWebSocketTransport
 
 log = logging.getLogger("Proxy")
 
@@ -194,6 +195,11 @@ class ProxyServer:
         self.fronter = DomainFronter(config)
         self.protocol_policy = ProtocolPolicy(config)
         self.mitm = None
+        self.worker_ws_transport = (
+            WorkerWebSocketTransport(config)
+            if self.protocol_policy.worker_websocket_tcp_enabled
+            else None
+        )
         self._cache = ResponseCache(max_mb=CACHE_MAX_MB)
         self._servers: list[asyncio.base_events.Server] = []
         self._client_tasks: set[asyncio.Task] = set()
@@ -923,6 +929,13 @@ class ProxyServer:
             return
 
         if route.decision == RouteDecision.RELAY_REQUIRED:
+            if route.reason == "tcp relay via worker websocket":
+                if await self._do_worker_ws_tcp_tunnel(host, port, reader, writer):
+                    return
+            if _is_ip_literal(host) and self.worker_ws_transport and self.worker_ws_transport.enabled:
+                log.info("IP literal -> TCP tunnel -> %s:%d", host, port)
+                if await self._do_worker_ws_tcp_tunnel(host, port, reader, writer):
+                    return
             if port == 443:
                 await self._do_mitm_connect(host, port, reader, writer)
             elif port == 80:
@@ -933,6 +946,17 @@ class ProxyServer:
             "Blocked compatible fallback -> %s:%d (%s)",
             host, port, route.reason,
         )
+
+    async def _do_worker_ws_tcp_tunnel(self, host: str, port: int,
+                                       reader: asyncio.StreamReader,
+                                       writer: asyncio.StreamWriter) -> bool:
+        if self.worker_ws_transport and self.worker_ws_transport.enabled:
+            log.info("Worker WebSocket TCP tunnel -> %s:%d", host, port)
+            ok = await self.worker_ws_transport.tunnel(host, port, reader, writer)
+            if not ok:
+                log.warning("Worker WebSocket TCP tunnel failed for %s:%d", host, port)
+            return ok
+        return False
 
     # ── Hosts override (fake DNS) ─────────────────────────────────
 

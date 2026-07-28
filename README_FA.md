@@ -14,27 +14,21 @@
 مسیریابی هوشمند سهمیه Google را فقط برای ترافیکی مصرف می‌کند که واقعاً به relay
 نیاز دارد:
 
-```
-دامنه/IP ایران             -> اینترنت مستقیم محلی
-دامنه‌های Google مجاز      -> مسیر مستقیم fronted
-HTTP(S) خارجی              -> Google Apps Script -> Cloudflare Worker
-UDP/QUIC/TCP خام/WebSocket -> fail-closed تا برنامه به TCP/HTTPS برگردد
-```
+    دامنه/IP ایران             -> اینترنت مستقیم محلی
+    دامنه‌های Google مجاز      -> مسیر مستقیم fronted
+    HTTP(S) خارجی              -> Google Apps Script -> Cloudflare Worker
+    UDP/QUIC/TCP خام/WebSocket -> fail-closed تا برنامه به TCP/HTTPS برگردد
 
-```
-مرورگر یا برنامه
-  -> پروکسی محلی HTTP یا SOCKS5
-  -> اتصال TLS به IP فرانت گوگل با SNI گوگل
-  -> Google Apps Script
-  -> Cloudflare Worker
-  -> سایت مقصد
-```
+    مرورگر یا برنامه
+      -> پروکسی محلی HTTP یا SOCKS5
+      -> اتصال TLS به IP فرانت گوگل با SNI گوگل
+      -> Google Apps Script
+      -> Cloudflare Worker
+      -> سایت مقصد
 
 مسیر اختیاری برای IP خروجی پایدار:
 
-```
-Cloudflare Worker -> Upstream Forwarder روی VPS -> سایت مقصد
-```
+    Cloudflare Worker -> Upstream Forwarder روی VPS -> سایت مقصد
 
 پروکسی محلی با گواهی CA محلی ترافیک HTTPS مرورگر را باز می‌کند، درخواست HTTP
 را به JSON رله تبدیل می‌کند، آن را از مسیر Google Apps Script به Worker می‌فرستد
@@ -70,7 +64,7 @@ Cloudflare Worker -> Upstream Forwarder روی VPS -> سایت مقصد
 
 منابع رسمی:
 
-- [Google Apps Script `UrlFetchApp`](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)
+- [Google Apps Script UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)
 - [سهمیه‌های Apps Script](https://developers.google.com/apps-script/guides/services/quotas)
 - [پروتکل‌های Cloudflare Workers](https://developers.cloudflare.com/workers/reference/protocols/)
 - [WebSocket در Workers](https://developers.cloudflare.com/workers/runtime-apis/websockets/)
@@ -80,25 +74,19 @@ Cloudflare Worker -> Upstream Forwarder روی VPS -> سایت مقصد
 
 ویندوز:
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
+    python -m venv .venv
+    .venv\Scripts\activate
+    pip install -r requirements.txt
 
 لینوکس / مک:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
 
 اگر PyPI مستقیم در دسترس نبود:
 
-```bash
-pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --trusted-host mirror-pypi.runflare.com
-```
+    pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --trusted-host mirror-pypi.runflare.com
 
 ## استقرار
 
@@ -114,15 +102,11 @@ pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --tr
 
 از نمونه امن، فایل خصوصی بسازید:
 
-```bash
-copy config.example.json config.json
-```
+    copy config.example.json config.json
 
 لینوکس / مک:
 
-```bash
-cp config.example.json config.json
-```
+    cp config.example.json config.json
 
 حداقل این مقدارها را تنظیم کنید:
 
@@ -135,15 +119,11 @@ cp config.example.json config.json
 
 اعتبارسنجی تنظیمات بدون اجرای proxy:
 
-```bash
-python main.py --check-config
-```
+    python main.py --check-config
 
 بررسی تصمیم مسیریابی بدون اجرای proxy:
 
-```bash
-python main.py --routing-check example.ir
-```
+    python main.py --routing-check example.ir
 
 ### تنظیمات مهم transport و سرعت
 
@@ -171,22 +151,16 @@ python main.py --routing-check example.ir
 
 ویندوز:
 
-```
-run.bat
-```
+    run.bat
 
 لینوکس / مک:
 
-```bash
-chmod +x run.sh
-./run.sh
-```
+    chmod +x run.sh
+    ./run.sh
 
 اجرای دستی:
 
-```bash
-python main.py
-```
+    python main.py
 
 پورت‌های پیش‌فرض:
 

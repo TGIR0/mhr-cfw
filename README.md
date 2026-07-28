@@ -13,27 +13,21 @@ first, then leave the codebase ready for a future Rust rewrite.
 
 Smart routing keeps Google quota for only the traffic that needs the relay:
 
-```
-Iranian domains/IPs        -> direct local internet
-Allowed Google domains     -> Google/fronted direct path
-Foreign HTTP(S) traffic    -> Google Apps Script -> Cloudflare Worker
-UDP/QUIC/raw TCP/WebSocket -> fail-closed so apps fall back to TCP/HTTPS
-```
+    Iranian domains/IPs        -> direct local internet
+    Allowed Google domains     -> Google/fronted direct path
+    Foreign HTTP(S) traffic    -> Google Apps Script -> Cloudflare Worker
+    UDP/QUIC/raw TCP/WebSocket -> fail-closed so apps fall back to TCP/HTTPS
 
-```
-Browser / app
-  -> local HTTP or SOCKS5 proxy
-  -> TLS connection to a Google frontend IP with Google SNI
-  -> Google Apps Script web app
-  -> Cloudflare Worker
-  -> target website
-```
+    Browser / app
+      -> local HTTP or SOCKS5 proxy
+      -> TLS connection to a Google frontend IP with Google SNI
+      -> Google Apps Script web app
+      -> Cloudflare Worker
+      -> target website
 
 Optional stable-exit mode:
 
-```
-Cloudflare Worker -> self-hosted upstream forwarder on a VPS -> target website
-```
+    Cloudflare Worker -> self-hosted upstream forwarder on a VPS -> target website
 
 The local proxy performs HTTPS interception with a local CA certificate, turns
 browser HTTP requests into relay JSON, sends them through Google Apps Script,
@@ -72,7 +66,7 @@ unsupported transport claims.
 
 References:
 
-- [Google Apps Script `UrlFetchApp`](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)
+- [Google Apps Script UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)
 - [Google Apps Script quotas](https://developers.google.com/apps-script/guides/services/quotas)
 - [Cloudflare Workers protocols](https://developers.cloudflare.com/workers/reference/protocols/)
 - [Cloudflare Workers WebSockets](https://developers.cloudflare.com/workers/runtime-apis/websockets/)
@@ -80,25 +74,19 @@ References:
 
 ## Install
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-```
+    python -m venv .venv
+    .venv\Scripts\activate
+    pip install -r requirements.txt
 
 On Linux/macOS:
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
+    python3 -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
 
 If PyPI is not reachable:
 
-```bash
-pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --trusted-host mirror-pypi.runflare.com
-```
+    pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --trusted-host mirror-pypi.runflare.com
 
 ## Deploy
 
@@ -114,15 +102,11 @@ pip install -r requirements.txt -i https://mirror-pypi.runflare.com/simple/ --tr
 
 Create a private config from the safe example:
 
-```bash
-copy config.example.json config.json
-```
+    copy config.example.json config.json
 
 On Linux/macOS:
 
-```bash
-cp config.example.json config.json
-```
+    cp config.example.json config.json
 
 Set at least:
 
@@ -134,15 +118,11 @@ Do not commit `config.json`; it is ignored because it contains secrets.
 
 Validate the config without starting listeners:
 
-```bash
-python main.py --check-config
-```
+    python main.py --check-config
 
 Check one routing decision without starting listeners:
 
-```bash
-python main.py --routing-check example.ir
-```
+    python main.py --routing-check example.ir
 
 ### Important transport and speed knobs
 
@@ -170,22 +150,16 @@ python main.py --routing-check example.ir
 
 Windows:
 
-```
-run.bat
-```
+    run.bat
 
 Linux/macOS:
 
-```bash
-chmod +x run.sh
-./run.sh
-```
+    chmod +x run.sh
+    ./run.sh
 
 Manual:
 
-```bash
-python main.py
-```
+    python main.py
 
 The default listeners are:
 

@@ -50,6 +50,14 @@ class ProtocolPolicy:
     def tcp_relay_mode(self) -> str:
         return self._tcp_relay_mode
 
+    @property
+    def worker_websocket_tcp_enabled(self) -> bool:
+        return self._tcp_relay_mode in {
+            "worker_websocket",
+            "worker_ws",
+            "websocket",
+        }
+
     def tcp_decision(self, host: str, port: int, *, bypassed: bool = False) -> ProtocolDecision:
         if bypassed:
             return ProtocolDecision(True, False, False, "host is explicitly bypassed")

@@ -195,6 +195,7 @@ def validate_config(config: dict) -> list[ConfigIssue]:
             "Unknown TCP relay mode. Use 'http_only' or 'worker_websocket'.",
         ))
 
+    _validate_worker_ws(config, issues)
     _validate_direct_worker(config, issues)
 
     return issues
@@ -236,6 +237,34 @@ def format_issues(issues: list[ConfigIssue]) -> str:
     for issue in issues:
         lines.append(f"[{issue.severity}] {issue.key}: {issue.message}")
     return "\n".join(lines)
+
+
+def _validate_worker_ws(config: dict, issues: list[ConfigIssue]) -> None:
+    tcp_mode = str(config.get("tcp_relay_mode", "http_only")).lower()
+    if tcp_mode not in {"worker_websocket", "worker_ws", "websocket"}:
+        return
+    url = str(config.get("worker_ws_url", "")).strip()
+    if not url:
+        issues.append(ConfigIssue(
+            ERROR,
+            "worker_ws_url",
+            "tcp_relay_mode=worker_websocket requires a wss:// Worker WebSocket URL.",
+        ))
+        return
+    parsed = urlparse(url)
+    if parsed.scheme != "wss" or not parsed.netloc:
+        issues.append(ConfigIssue(
+            ERROR,
+            "worker_ws_url",
+            "Worker WebSocket URL must be absolute and use wss://.",
+        ))
+    ws_key = str(config.get("worker_ws_auth_key") or config.get("auth_key", ""))
+    if ws_key in _PLACEHOLDER_AUTH_KEYS:
+        issues.append(ConfigIssue(
+            ERROR,
+            "worker_ws_auth_key",
+            "Worker WebSocket auth key is missing or still uses a placeholder.",
+        ))
 
 
 def _validate_direct_worker(config: dict, issues: list[ConfigIssue]) -> None:

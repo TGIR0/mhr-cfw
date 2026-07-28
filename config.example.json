@@ -38,6 +38,8 @@
   "tcp_connect_timeout": 10,
   "max_response_body_bytes": 209715200,
   "tcp_relay_mode": "http_only",
+  "worker_ws_url": "",
+  "worker_ws_auth_key": "",
   "allow_direct_tcp": false,
   "allow_direct_udp": false,
   "udp_mode": "disabled",

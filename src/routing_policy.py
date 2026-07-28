@@ -66,6 +66,9 @@ class RoutingPolicy:
         self.relay_foreign_enabled = bool(config.get("relay_foreign_enabled", True))
         self.compat_block_udp_quic = bool(config.get("compat_block_udp_quic", True))
         self.websocket_mode = str(config.get("websocket_mode", "relay")).lower()
+        self.tcp_worker_ws_enabled = str(
+            config.get("tcp_relay_mode", "http_only")
+        ).lower() in {"worker_websocket", "worker_ws", "websocket"}
         self.iran_domain_suffixes = _normalize_suffixes(
             config.get("iran_domain_suffixes", [".ir"])
         )
@@ -114,6 +117,11 @@ class RoutingPolicy:
                 "websocket blocked by config",
             )
         if port not in self.HTTP_PORTS:
+            if self.tcp_worker_ws_enabled:
+                return RouteResult(
+                    RouteDecision.RELAY_REQUIRED,
+                    "tcp relay via worker websocket",
+                )
             return RouteResult(
                 RouteDecision.FAIL_CLOSED_COMPAT,
                 "non-http tcp blocked for compatibility fallback",

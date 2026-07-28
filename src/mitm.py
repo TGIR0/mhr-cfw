@@ -75,7 +75,7 @@ class MITMCertManager:
 
     def _create_ca(self):
         os.makedirs(CA_DIR, exist_ok=True)
-        self._ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        self._ca_key = rsa.generate_private_key(public_exponent=65537, key_size=4096)
         subject = issuer = x509.Name([
             x509.NameAttribute(NameOID.COMMON_NAME, PROJECT_CERT_NAME),
             x509.NameAttribute(NameOID.ORGANIZATION_NAME, PROJECT_NAME),

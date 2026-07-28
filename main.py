@@ -199,7 +199,11 @@ def main():
     if args.port is not None:
         config["listen_port"] = args.port
     elif os.environ.get("DFT_PORT"):
-        config["listen_port"] = int(os.environ["DFT_PORT"])
+        try:
+            config["listen_port"] = int(os.environ["DFT_PORT"])
+        except ValueError:
+            print(f"Invalid DFT_PORT: {os.environ['DFT_PORT']}")
+            sys.exit(1)
 
     if args.host is not None:
         config["listen_host"] = args.host
@@ -209,7 +213,11 @@ def main():
     if args.socks5_port is not None:
         config["socks5_port"] = args.socks5_port
     elif os.environ.get("DFT_SOCKS5_PORT"):
-        config["socks5_port"] = int(os.environ["DFT_SOCKS5_PORT"])
+        try:
+            config["socks5_port"] = int(os.environ["DFT_SOCKS5_PORT"])
+        except ValueError:
+            print(f"Invalid DFT_SOCKS5_PORT: {os.environ['DFT_SOCKS5_PORT']}")
+            sys.exit(1)
 
     if args.disable_socks5:
         config["socks5_enabled"] = False
