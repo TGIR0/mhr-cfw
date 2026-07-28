@@ -609,19 +609,69 @@ class ProxyServer:
                 log.info(log_msg, *log_args)
 
     async def start(self):
-        http_srv = await asyncio.start_server(self._on_client, self.host, self.port)
+        # Detect and handle port conflicts with automatic fallback
+        http_srv = None
         socks_srv = None
-
-        if self.socks_enabled:
+        original_port = self.port
+        original_socks_port = self.socks_port
+        
+        # Try to start HTTP server with port auto-detection
+        max_port_attempts = 10
+        for attempt in range(max_port_attempts):
             try:
-                socks_srv = await asyncio.start_server(
-                    self._on_socks_client, self.socks_host, self.socks_port
-                )
+                http_srv = await asyncio.start_server(self._on_client, self.host, self.port)
+                break
             except OSError as e:
-                log.error("SOCKS5 listener failed on %s:%d: %s",
-                          self.socks_host, self.socks_port, e)
-
+                if e.errno == 98 or e.errno == 10048:  # Address already in use
+                    if attempt < max_port_attempts - 1:
+                        self.port = int(self.port) + 1
+                        log.warning(
+                            "Port %d is busy, trying port %d (attempt %d/%d)...",
+                            original_port if attempt == 0 else self.port - 1,
+                            self.port,
+                            attempt + 1,
+                            max_port_attempts
+                        )
+                    else:
+                        log.error("Could not find an available port after %d attempts", max_port_attempts)
+                        raise
+                else:
+                    raise
+        
+        if self.socks_enabled:
+            for attempt in range(max_port_attempts):
+                try:
+                    socks_srv = await asyncio.start_server(
+                        self._on_socks_client, self.socks_host, self.socks_port
+                    )
+                    break
+                except OSError as e:
+                    if e.errno == 98 or e.errno == 10048:
+                        if attempt < max_port_attempts - 1:
+                            self.socks_port = int(self.socks_port) + 1
+                            log.warning(
+                                "SOCKS5 port %d is busy, trying port %d (attempt %d/%d)...",
+                                original_socks_port if attempt == 0 else self.socks_port - 1,
+                                self.socks_port,
+                                attempt + 1,
+                                max_port_attempts
+                            )
+                        else:
+                            log.error("Could not find an available SOCKS5 port after %d attempts", max_port_attempts)
+                            if http_srv:
+                                http_srv.close()
+                                await http_srv.wait_closed()
+                            raise
+                    else:
+                        raise
+        
         self._servers = [s for s in (http_srv, socks_srv) if s]
+
+        # Report actual ports if they changed from config
+        if self.port != original_port:
+            log.info("HTTP proxy port changed from %d to %d due to conflict", original_port, self.port)
+        if self.socks_enabled and self.socks_port != original_socks_port:
+            log.info("SOCKS5 proxy port changed from %d to %d due to conflict", original_socks_port, self.socks_port)
 
         log.info(
             "HTTP proxy listening on %s:%d",

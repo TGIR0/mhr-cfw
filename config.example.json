@@ -123,5 +123,15 @@
     "safebrowsing.google.com"
   ],
   "youtube_via_relay": false,
-  "hosts": {}
+  "hosts": {},
+  "_comments": {
+    "description": "Optimized default configuration for home network use without VPS",
+    "tips": [
+      "Set 'auth_key' to a strong random secret before first run",
+      "For Cloudflare Worker mode, set 'mode' to 'worker' and configure 'worker_ws_url'",
+      "Enable 'low_profile_scan' in constants.py for stealthier IP scanning",
+      "Adjust 'listen_port' if 8085 is already in use",
+      "Set 'lan_sharing' to true only if you need LAN access (changes listen_host to 0.0.0.0)"
+    ]
+  }
 }

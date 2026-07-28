@@ -201,7 +201,16 @@ async function handleTcpWebSocket(request, env) {
     server.binaryType = "arraybuffer";
     server.accept({ allowHalfOpen: true });
 
-    tcpWebSocketSession(server, env).catch(err => {
+    // Session state for fallback tracking
+    let directFallbackAttempted = false;
+    let connectionStatus = "initializing";
+
+    tcpWebSocketSession(server, env, { 
+        setStatus: (s) => { connectionStatus = s; },
+        getStatus: () => connectionStatus,
+        setFallbackAttempted: (v) => { directFallbackAttempted = v; },
+        isFallbackAttempted: () => directFallbackAttempted
+    }).catch(err => {
         try {
             server.send(JSON.stringify({ op: "error", e: String(err && err.message || err) }));
             server.close(1011, "tcp session failed");
@@ -216,7 +225,7 @@ async function handleTcpWebSocket(request, env) {
     });
 }
 
-async function tcpWebSocketSession(ws, env) {
+async function tcpWebSocketSession(ws, env, statusTracker = null) {
     let socket = null;
     let writer = null;
     let opened = false;
@@ -224,6 +233,11 @@ async function tcpWebSocketSession(ws, env) {
     let idleTimer = setTimeout(() => {
         try { ws.close(1000, "idle timeout"); } catch (_) {}
     }, TCP_IDLE_TIMEOUT_MS);
+
+    // Track connection status for real-time reporting
+    if (statusTracker) {
+        statusTracker.setStatus("waiting_for_hello");
+    }
 
     function resetIdle() {
         clearTimeout(idleTimer);
@@ -257,16 +271,44 @@ async function tcpWebSocketSession(ws, env) {
                     return;
                 }
 
-                socket = connect({ hostname: host, port }, { allowHalfOpen: true });
-                await waitForSocketOpened(
-                    socket,
-                    parseInt(env.TCP_CONNECT_TIMEOUT_MS, 10) ||
-                        DEFAULT_TCP_CONNECT_TIMEOUT_MS
-                );
-                writer = socket.writable.getWriter();
-                opened = true;
-                ws.send(JSON.stringify({ ok: true }));
-                pipeTcpToWebSocket(socket, ws, resetIdle);
+                // Report connecting status
+                if (statusTracker) {
+                    statusTracker.setStatus(`connecting_to_${host}:${port}`);
+                }
+
+                try {
+                    socket = connect({ hostname: host, port }, { allowHalfOpen: true });
+                    await waitForSocketOpened(
+                        socket,
+                        parseInt(env.TCP_CONNECT_TIMEOUT_MS, 10) ||
+                            DEFAULT_TCP_CONNECT_TIMEOUT_MS
+                    );
+                    writer = socket.writable.getWriter();
+                    opened = true;
+                    
+                    // Report successful connection
+                    if (statusTracker) {
+                        statusTracker.setStatus("connected");
+                    }
+                    
+                    ws.send(JSON.stringify({ ok: true }));
+                    pipeTcpToWebSocket(socket, ws, resetIdle);
+                } catch (connErr) {
+                    // Connection failed - report status and attempt fallback if available
+                    if (statusTracker) {
+                        statusTracker.setStatus(`connection_failed: ${connErr.message}`);
+                    }
+                    
+                    // Send error to client so it can attempt direct connection as fallback
+                    ws.send(JSON.stringify({ 
+                        ok: false, 
+                        e: `TCP connection failed: ${connErr.message}`,
+                        fallback_suggestion: true 
+                    }));
+                    
+                    // Don't close immediately - let client decide on fallback
+                    throw connErr;
+                }
                 return;
             }
 

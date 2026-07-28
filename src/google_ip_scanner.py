@@ -105,12 +105,13 @@ async def _probe_ip(
             return ProbeResult(ip=ip, error=f"probe failed: {type(e).__name__}")
 
 
-async def run(front_domain: str) -> bool:
+async def run(front_domain: str, low_profile: bool = False) -> bool:
     """
     Scan all candidate Google IPs and display results.
 
     Args:
         front_domain: The SNI hostname to use (e.g. "www.google.com").
+        low_profile: If True, use slower scanning to avoid detection.
 
     Returns:
         True if at least one IP is reachable, False otherwise.
@@ -118,11 +119,18 @@ async def run(front_domain: str) -> bool:
     timeout = GOOGLE_SCANNER_TIMEOUT
     concurrency = GOOGLE_SCANNER_CONCURRENCY
 
+    # Low profile mode: reduce concurrency for stealthier scanning
+    if low_profile:
+        concurrency = min(concurrency, 3)
+        log.info("Low profile mode enabled: reduced concurrency to %d", concurrency)
+
     print()
     print(f"Scanning {len(CANDIDATE_IPS)} Google frontend IPs")
     print(f"  SNI: {front_domain}")
     print(f"  Timeout: {timeout}s per IP")
     print(f"  Concurrency: {concurrency} parallel probes")
+    if low_profile:
+        print(f"  Mode: Low Profile (stealth)")
     print()
 
     # Create semaphore to limit concurrency
@@ -172,18 +180,19 @@ async def run(front_domain: str) -> bool:
     return True
 
 
-def scan_sync(front_domain: str) -> bool:
+def scan_sync(front_domain: str, low_profile: bool = False) -> bool:
     """
     Wrapper to run async scanner from sync context (e.g. main.py).
 
     Args:
         front_domain: The SNI hostname to use.
+        low_profile: If True, use slower scanning to avoid detection.
 
     Returns:
         True if at least one IP is reachable, False otherwise.
     """
     try:
-        return asyncio.run(run(front_domain))
+        return asyncio.run(run(front_domain, low_profile))
     except KeyboardInterrupt:
         print("\nScan interrupted by user.")
         return False

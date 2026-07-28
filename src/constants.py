@@ -32,6 +32,17 @@ TCP_CONNECT_TIMEOUT     = 10
 # ── Google IP Scanner settings ──────────────────────────────────────────────
 GOOGLE_SCANNER_TIMEOUT      = 4       # Timeout per IP probe (seconds)
 GOOGLE_SCANNER_CONCURRENCY  = 8       # Parallel probes
+GOOGLE_SCANNER_LOW_PROFILE  = False   # If True, use reduced concurrency for stealthier scanning
+
+# Low profile mode: reduces concurrency to avoid detection by DPI/firewall
+# Set to True if you experience blocking during scans or are on a restricted network
+def _apply_low_profile():
+    global GOOGLE_SCANNER_CONCURRENCY
+    if GOOGLE_SCANNER_LOW_PROFILE:
+        GOOGLE_SCANNER_CONCURRENCY = min(GOOGLE_SCANNER_CONCURRENCY, 3)
+
+_apply_low_profile()
+
 # Candidate Google frontend IPs for scanning (multiple ASNs and regions)
 CANDIDATE_IPS: tuple[str, ...] = (
     "216.239.32.120",

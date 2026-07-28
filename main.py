@@ -14,6 +14,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import sys
 
 import bootstrap  # noqa: F401  # side-effect: keep historical ./src imports working
@@ -362,9 +363,29 @@ async def _run(config):
     _log = logging.getLogger("asyncio")
     loop.set_exception_handler(_make_exception_handler(_log))
     server = ProxyServer(config)
+    
+    # Setup graceful shutdown signal handlers
+    shutdown_event = asyncio.Event()
+    
+    def handle_signal(sig):
+        sig_name = signal.Signals(sig).name
+        _log.info("Received %s signal, initiating graceful shutdown...", sig_name)
+        shutdown_event.set()
+    
+    # Register signal handlers for graceful shutdown
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, lambda s=sig: handle_signal(s))
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler for all signals
+            pass
+    
     try:
         await server.start()
+        # Wait for shutdown signal instead of running forever
+        await shutdown_event.wait()
     finally:
+        _log.info("Shutting down proxy server...")
         await server.stop()
 
 
