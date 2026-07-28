@@ -108,7 +108,17 @@ class MITMCertManager:
         with open(CA_CERT_FILE, "wb") as f:
             f.write(self._ca_cert.public_bytes(serialization.Encoding.PEM))
         log.warning("Generated new CA certificate: %s", CA_CERT_FILE)
-        log.warning(">>> Install this file in your browser's Trusted Root CAs! <<<")
+        log.warning("")
+        log.warning(">>> IMPORTANT: Install this certificate in your browser's Trusted Root CAs <<<")
+        log.warning(f"    Certificate path: {CA_CERT_FILE}")
+        log.warning("")
+        log.warning("Installation instructions:")
+        log.warning("  Windows: Double-click the file -> Install Certificate -> Local Machine ->")
+        log.warning("           Place in 'Trusted Root Certification Authorities'")
+        log.warning("  macOS:   Double-click the file -> Keychain Access -> System keychain -> Trust -> Always Trust")
+        log.warning("  Linux:   Import into your browser's certificate manager or system trust store")
+        log.warning("  Firefox: Settings -> Privacy & Security -> View Certificates -> Authorities -> Import")
+        log.warning("")
 
     _CTX_CACHE_MAX = 512
 

@@ -1,0 +1,24 @@
+name = "mhr-cfw"
+main = "deploy/cloudflare-worker/worker.js"
+compatibility_date = "2024-01-01"
+
+# Enable Durable Objects for WebSocket persistence
+[[durable_objects.bindings]]
+name = "WEBSOCKET_DO"
+class_name = "WebSocketDurableObject"
+
+# Enable R2 storage for large file handling
+[[r2_buckets]]
+binding = "MHR_R2"
+bucket_name = "mhr-large-files"
+
+# Migration for Durable Objects
+[[migrations]]
+tag = "v1"
+new_classes = ["WebSocketDurableObject"]
+
+# Environment variables (set these via wrangler secret or dashboard)
+[vars]
+WORKER_URL = "YOUR_WORKER_HOSTNAME.workers.dev"
+WORKER_AUTH_KEY = "CHANGE_ME_TO_SECRET"
+WORKER_WS_AUTH_KEY = "CHANGE_ME_TO_SECRET"

@@ -171,11 +171,19 @@ class PrettyFormatter(logging.Formatter):
 
 # ─── public API ────────────────────────────────────────────────────────────
 
-def configure(level: str = "INFO", *, stream=None) -> None:
+def configure(level: str = "INFO", *, stream=None, enable_rotating_file: bool = False, log_file_path: str = "proxy.log", max_log_mb: int = 10, backup_count: int = 3) -> None:
     """Install the pretty formatter on the root logger.
 
     Safe to call multiple times; replaces prior handlers set up by this
     module and leaves unrelated handlers alone (for tests / embedding).
+    
+    Args:
+        level: Log level name (DEBUG, INFO, WARNING, ERROR)
+        stream: Output stream for console logging
+        enable_rotating_file: If True, also log to a rotating file
+        log_file_path: Path to the log file
+        max_log_mb: Maximum size of log file in MB before rotation
+        backup_count: Number of backup log files to keep
     """
     stream = stream or sys.stderr
     use_color = _supports_color(stream)
@@ -192,6 +200,30 @@ def configure(level: str = "INFO", *, stream=None) -> None:
         if getattr(h, "name", "") == "tg_domain_relay.pretty":
             root.removeHandler(h)
     root.addHandler(handler)
+
+    # Add rotating file handler if requested
+    if enable_rotating_file:
+        try:
+            from logging.handlers import RotatingFileHandler
+            file_handler = RotatingFileHandler(
+                log_file_path,
+                maxBytes=max_log_mb * 1024 * 1024,
+                backupCount=backup_count,
+                encoding="utf-8"
+            )
+            file_handler.setFormatter(PrettyFormatter(use_color=False))
+            file_handler.set_name("tg_domain_relay.file")
+            
+            # Remove old file handlers first
+            for h in list(root.handlers):
+                if getattr(h, "name", "") == "tg_domain_relay.file":
+                    root.removeHandler(h)
+            
+            root.addHandler(file_handler)
+            logging.getLogger("Proxy").info("Rotating file logging enabled: %s (max %dMB, %d backups)", 
+                                           log_file_path, max_log_mb, backup_count)
+        except Exception as e:
+            logging.getLogger("Proxy").warning("Failed to setup rotating file logging: %s", e)
 
     # Suppress cosmetic asyncio warning spam:
     #   "returning true from eof_received() has no effect when using ssl"
