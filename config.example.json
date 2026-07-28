@@ -132,6 +132,35 @@
       "Enable 'low_profile_scan' in constants.py for stealthier IP scanning",
       "Adjust 'listen_port' if 8085 is already in use",
       "Set 'lan_sharing' to true only if you need LAN access (changes listen_host to 0.0.0.0)"
-    ]
+    ],
+    "advanced_features": {
+      "gas_load_balancing": {
+        "description": "Use multiple Google Apps Script endpoints to bypass 20k daily quota limit",
+        "setup": [
+          "Deploy multiple Apps Script instances with different deployment IDs",
+          "Add them to 'gas_endpoints' array instead of single 'script_id'",
+          "System automatically rotates between endpoints using Round Robin",
+          "Daily quotas reset automatically at midnight"
+        ]
+      },
+      "cloudflare_r2_support": {
+        "description": "Store large files (>90MB) in R2 to bypass Worker response size limits",
+        "setup": [
+          "Create R2 bucket in Cloudflare dashboard",
+          "Bind it to Worker with name 'MHR_R2'",
+          "Worker automatically detects large files and stores them in R2",
+          "Client receives download URL for direct R2 access"
+        ]
+      },
+      "durable_objects_ws": {
+        "description": "Use Durable Objects for persistent WebSocket connections",
+        "setup": [
+          "Configure Durable Object binding in wrangler.toml",
+          "WebSocket connections survive Worker hibernation",
+          "Connection state is persisted and recoverable",
+          "Automatic fallback suggestions on connection failures"
+        ]
+      }
+    }
   }
 }

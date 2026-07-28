@@ -1,6 +1,7 @@
-// Cloudflare Worker
+// Cloudflare Worker - Enhanced with Durable Objects and R2 support
 
 import { connect } from "cloudflare:sockets";
+import { WebSocketDurableObject } from "./durable-object.js";
 
 const WORKER_URL = "YOUR_WORKER_HOSTNAME.workers.dev";
 
@@ -33,6 +34,17 @@ function rateLimited(key) {
 export default {
     async fetch(request, env) {
         try {
+            // Handle R2 download requests first
+            const r2Response = await handleR2Download(request, env);
+            if (r2Response) return r2Response;
+            
+            // Handle WebSocket requests via Durable Objects for persistence
+            if (request.headers.get('Upgrade') === 'websocket') {
+                const id = env.WEBSOCKET_DO.idFromName("mhr-ws-session");
+                const stub = env.WEBSOCKET_DO.get(id);
+                return stub.fetch(request);
+            }
+            
             if (isWebSocketTcpRequest(request)) {
                 return handleTcpWebSocket(request, env);
             }
@@ -117,6 +129,43 @@ async function relayHttp(req, env) {
         const upstreamResult = await forwardViaUpstreamJson(req, env, upstreamUrl);
         if (upstreamResult) return upstreamResult;
         // fall through to direct fetch only when fail-mode is open
+    }
+
+    // Check for large file and use R2 if available
+    const LARGE_FILE_THRESHOLD = 90 * 1024 * 1024; // 90 MB
+    
+    try {
+        // First do a HEAD request to check content length
+        const headResponse = await fetch(targetUrl.toString(), { method: "HEAD" });
+        const contentLength = parseInt(headResponse.headers.get("content-length") || "0", 10);
+        
+        // If file is large and R2 is available, use R2 storage
+        if (contentLength > LARGE_FILE_THRESHOLD && env.MHR_R2) {
+            const fullResponse = await fetch(targetUrl.toString(), {
+                method: (req.m || "GET").toUpperCase(),
+                headers: new Headers(req.h || {})
+            });
+            
+            // Generate unique key for R2
+            const r2Key = `large-files/${Date.now()}-${Math.random().toString(36).substring(7)}`;
+            
+            // Stream directly to R2 without loading into memory
+            await env.MHR_R2.put(r2Key, fullResponse.body, {
+                httpMetadata: { 
+                    contentType: fullResponse.headers.get("content-type") || "application/octet-stream"
+                }
+            });
+            
+            // Return R2 download URL instead of raw content
+            return {
+                r2_download_url: `/download/${r2Key}`,
+                size: contentLength,
+                message: "Large file stored in R2. Use the download endpoint."
+            };
+        }
+    } catch (headErr) {
+        // If HEAD request fails, continue with normal flow
+        console.log("HEAD request failed, proceeding with normal fetch:", headErr.message);
     }
 
     const headers = new Headers();
@@ -538,6 +587,9 @@ async function forwardViaUpstreamJson(req, env, upstreamUrl) {
     }
 }
 
+// Export Durable Object class for Cloudflare configuration
+export { WebSocketDurableObject };
+
 function upstreamFailureJson(reason, failMode) {
     if (failMode === "open") {
         console.warn("upstream forwarder failed (falling back to direct):", reason);
@@ -554,4 +606,32 @@ function json(obj, status = 200) {
             "cache-control": "no-store"
         }
     });
+}
+
+// Handle R2 download requests
+async function handleR2Download(request, env) {
+    const url = new URL(request.url);
+    
+    if (url.pathname.startsWith('/download/')) {
+        const key = url.pathname.replace('/download/', '');
+        
+        try {
+            const object = await env.MHR_R2.get(key);
+            
+            if (object === null) {
+                return new Response('Object not found', { status: 404 });
+            }
+            
+            const headers = new Headers();
+            object.writeHttpMetadata(headers);
+            headers.set('Access-Control-Allow-Origin', '*');
+            headers.set('Content-Disposition', `attachment; filename="${key.split('/').pop()}"`);
+            
+            return new Response(object.body, { headers });
+        } catch (err) {
+            return new Response(`R2 download error: ${err.message}`, { status: 500 });
+        }
+    }
+    
+    return null; // Not an R2 download request
 }
